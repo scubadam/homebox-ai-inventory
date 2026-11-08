@@ -1,0 +1,107 @@
+replicaCount: 1
+
+image:
+  repository: ghcr.io/scubadam/homebox-ai-inventory
+  pullPolicy: IfNotPresent
+  # Overrides the image tag whose default is the chart appVersion.
+  tag: ""
+
+imagePullSecrets: []
+nameOverride: ""
+fullnameOverride: ""
+
+# Configuration for the Homebox backend
+homebox:
+  # Internal URL of your Homebox instance inside or outside the cluster
+  url: "http://homebox.homebox.svc.cluster.local:7745"
+  # Public user-facing URL of Homebox (used for linking directly to items)
+  publicUrl: ""
+
+# AI Vision Provider settings
+ai:
+  # Provider: "gemini" (default), "ollama", "openai", or "anthropic"
+  provider: "gemini"
+  # Model name (default depends on provider: gemini-2.5-flash, llava-phi3, gpt-4o-mini)
+  model: "gemini-2.5-flash"
+  # Optional custom base URL (e.g., http://ollama-service.default.svc.cluster.local:11434 for cluster Ollama)
+  baseUrl: ""
+  # Request timeout in seconds
+  timeoutSeconds: 60
+
+# Secret Configuration (API Keys & Credentials)
+secrets:
+  # If existingSecret is specified, the chart will load keys from this Secret:
+  # Expects keys: HOMEBOX_API_KEY (or HOMEBOX_USERNAME/HOMEBOX_PASSWORD), and AI_API_KEY (or GEMINI_API_KEY)
+  existingSecret: ""
+  # Or provide values directly here if not using an existing Secret (e.g. SOPS)
+  homeboxApiKey: ""
+  homeboxUsername: ""
+  homeboxPassword: ""
+  aiApiKey: ""
+
+# Image processing settings
+imaging:
+  maxDimension: 1600
+  jpegQuality: 85
+
+serviceAccount:
+  create: false
+  name: ""
+
+podAnnotations: {}
+
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 65532
+  runAsGroup: 65532
+  fsGroup: 65532
+
+securityContext:
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: true
+  capabilities:
+    drop:
+      - ALL
+
+service:
+  type: ClusterIP
+  port: 8000
+
+ingress:
+  enabled: false
+  className: ""
+  annotations: {}
+  hosts:
+    - host: inventory.local
+      paths:
+        - path: /
+          pathType: Prefix
+  tls: []
+
+resources:
+  limits:
+    cpu: 500m
+    memory: 256Mi
+  requests:
+    cpu: 20m
+    memory: 64Mi
+
+livenessProbe:
+  httpGet:
+    path: /api/health
+    port: http
+  initialDelaySeconds: 5
+  periodSeconds: 20
+  timeoutSeconds: 3
+
+readinessProbe:
+  httpGet:
+    path: /api/health
+    port: http
+  initialDelaySeconds: 2
+  periodSeconds: 10
+  timeoutSeconds: 3
+
+nodeSelector: {}
+tolerations: []
+affinity: {}

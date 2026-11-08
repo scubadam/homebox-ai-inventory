@@ -1,0 +1,21 @@
+apiVersion: v2
+name: homebox-ai-inventory
+description: A lightweight, mobile-first AI vision companion PWA for Homebox
+type: application
+version: 0.1.0
+appVersion: "0.1.0"
+icon: https://raw.githubusercontent.com/scubadam/homebox-ai-inventory/main/web/static/icon.svg
+keywords:
+  - homebox
+  - inventory
+  - ai
+  - vision
+  - gemini
+  - ollama
+  - pwa
+home: https://github.com/scubadam/homebox-ai-inventory
+sources:
+  - https://github.com/scubadam/homebox-ai-inventory
+maintainers:
+  - name: scubadam
+    url: https://github.com/scubadam

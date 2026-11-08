@@ -1,0 +1,40 @@
+services:
+  homebox:
+    image: ghcr.io/sysadminsmedia/homebox:latest
+    container_name: homebox
+    restart: unless-stopped
+    environment:
+      - HBOX_MODE=production
+      - HBOX_STORAGE_CONN_STRING=file:///data?no_tmp_dir=true
+      - HBOX_OPTIONS_ALLOW_REGISTRATION=true
+      - HBOX_WEB_PORT=7745
+      - HBOX_AUTH_API_KEY_PEPPER=${HBOX_AUTH_API_KEY_PEPPER:?Required: generate with 'openssl rand -base64 48'}
+    volumes:
+      - homebox_data:/data
+    ports:
+      - "7745:7745"
+
+  homebox-ai-inventory:
+    image: ghcr.io/scubadam/homebox-ai-inventory:latest
+    container_name: homebox-ai-inventory
+    restart: unless-stopped
+    environment:
+      - PORT=8000
+      - HOMEBOX_URL=http://homebox:7745
+      - HOMEBOX_PUBLIC_URL=http://localhost:7745
+      # Authentication: provide an API token OR username & password
+      - HOMEBOX_API_KEY=${HOMEBOX_API_KEY:-}
+      - HOMEBOX_USERNAME=${HOMEBOX_USERNAME:-}
+      - HOMEBOX_PASSWORD=${HOMEBOX_PASSWORD:-}
+      # AI Provider configuration: "gemini" (default), "ollama", or "openai"
+      - AI_PROVIDER=${AI_PROVIDER:-gemini}
+      - AI_API_KEY=${AI_API_KEY:-}
+      - AI_MODEL=${AI_MODEL:-gemini-2.5-flash}
+      - AI_BASE_URL=${AI_BASE_URL:-}
+    ports:
+      - "8000:8000"
+    depends_on:
+      - homebox
+
+volumes:
+  homebox_data:
