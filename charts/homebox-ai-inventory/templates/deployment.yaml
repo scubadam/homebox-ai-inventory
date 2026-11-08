@@ -55,10 +55,53 @@ spec:
               value: {{ .Values.imaging.maxDimension | quote }}
             - name: JPEG_QUALITY
               value: {{ .Values.imaging.jpegQuality | quote }}
+            {{- if .Values.secrets.homeboxApiKeySecret.name }}
+            - name: HOMEBOX_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.secrets.homeboxApiKeySecret.name }}
+                  key: {{ .Values.secrets.homeboxApiKeySecret.key | default "HOMEBOX_API_KEY" }}
+            {{- end }}
+            {{- if .Values.secrets.homeboxUsernameSecret.name }}
+            - name: HOMEBOX_USERNAME
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.secrets.homeboxUsernameSecret.name }}
+                  key: {{ .Values.secrets.homeboxUsernameSecret.key | default "HOMEBOX_USERNAME" }}
+            {{- end }}
+            {{- if .Values.secrets.homeboxPasswordSecret.name }}
+            - name: HOMEBOX_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.secrets.homeboxPasswordSecret.name }}
+                  key: {{ .Values.secrets.homeboxPasswordSecret.key | default "HOMEBOX_PASSWORD" }}
+            {{- end }}
+            {{- if .Values.secrets.aiApiKeySecret.name }}
+            - name: AI_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.secrets.aiApiKeySecret.name }}
+                  key: {{ .Values.secrets.aiApiKeySecret.key | default "AI_API_KEY" }}
+            {{- end }}
+            {{- with .Values.extraEnv }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          {{- $hasEnvFrom := or .Values.secrets.existingSecret (and (not .Values.secrets.homeboxApiKeySecret.name) (or .Values.secrets.homeboxApiKey .Values.secrets.aiApiKey .Values.secrets.homeboxUsername)) .Values.secrets.extraSecretRefs .Values.extraEnvFrom }}
+          {{- if $hasEnvFrom }}
           envFrom:
+            {{- if or .Values.secrets.existingSecret (and (not .Values.secrets.homeboxApiKeySecret.name) (or .Values.secrets.homeboxApiKey .Values.secrets.aiApiKey .Values.secrets.homeboxUsername)) }}
             - secretRef:
                 name: {{ include "homebox-ai-inventory.secretName" . }}
                 optional: true
+            {{- end }}
+            {{- range .Values.secrets.extraSecretRefs }}
+            - secretRef:
+                name: {{ . }}
+            {{- end }}
+            {{- with .Values.extraEnvFrom }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          {{- end }}
           livenessProbe:
             {{- toYaml .Values.livenessProbe | nindent 12 }}
           readinessProbe:
