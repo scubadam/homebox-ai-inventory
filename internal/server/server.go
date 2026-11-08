@@ -2,6 +2,7 @@ package server
 
 import (
 	"crypto/rand"
+	"crypto/subtle"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -67,7 +68,30 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/analyze", s.handleAnalyze)
 	mux.HandleFunc("POST /api/commit", s.handleCommit)
 
-	return corsMiddleware(mux)
+	return corsMiddleware(s.basicAuthMiddleware(mux))
+}
+
+func (s *Server) basicAuthMiddleware(next http.Handler) http.Handler {
+	if !s.cfg.AuthEnabled {
+		return next
+	}
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Health check is always unauthenticated so probes and monitoring succeed
+		if r.URL.Path == "/api/health" {
+			next.ServeHTTP(w, r)
+			return
+		}
+
+		user, pass, ok := r.BasicAuth()
+		if !ok || subtle.ConstantTimeCompare([]byte(user), []byte(s.cfg.AuthUsername)) != 1 ||
+			subtle.ConstantTimeCompare([]byte(pass), []byte(s.cfg.AuthPassword)) != 1 {
+			w.Header().Set("WWW-Authenticate", `Basic realm="Homebox AI Inventory"`)
+			http.Error(w, "Unauthorized", http.StatusUnauthorized)
+			return
+		}
+
+		next.ServeHTTP(w, r)
+	})
 }
 
 func corsMiddleware(next http.Handler) http.Handler {
@@ -146,9 +170,13 @@ func (s *Server) handleServiceWorker(w http.ResponseWriter, _ *http.Request) {
 }
 
 func (s *Server) handleHealth(w http.ResponseWriter, _ *http.Request) {
+	provName := ""
+	if s.provider != nil {
+		provName = s.provider.Name()
+	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"status":      "ok",
-		"ai_provider": s.provider.Name(),
+		"ai_provider": provName,
 		"ai_model":    s.cfg.AIModel,
 		"homebox_url": s.cfg.HomeboxPublicURL,
 	})

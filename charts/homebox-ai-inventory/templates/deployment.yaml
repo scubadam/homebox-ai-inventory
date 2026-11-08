@@ -83,15 +83,27 @@ spec:
                   name: {{ .Values.secrets.aiApiKeySecret.name }}
                   key: {{ .Values.secrets.aiApiKeySecret.key | default "AI_API_KEY" }}
             {{- end }}
+            {{- if .Values.auth.enabled }}
+            - name: AUTH_USERNAME
+              valueFrom:
+                secretKeyRef:
+                  name: {{ if .Values.auth.existingSecret }}{{ .Values.auth.existingSecret }}{{ else }}{{ include "homebox-ai-inventory.fullname" . }}-auth{{ end }}
+                  key: {{ .Values.auth.usernameKey | default "username" }}
+            - name: AUTH_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ if .Values.auth.existingSecret }}{{ .Values.auth.existingSecret }}{{ else }}{{ include "homebox-ai-inventory.fullname" . }}-auth{{ end }}
+                  key: {{ .Values.auth.passwordKey | default "password" }}
+            {{- end }}
             {{- with .Values.extraEnv }}
             {{- toYaml . | nindent 12 }}
             {{- end }}
-          {{- $hasEnvFrom := or .Values.secrets.existingSecret (and (not .Values.secrets.homeboxApiKeySecret.name) (or .Values.secrets.homeboxApiKey .Values.secrets.aiApiKey .Values.secrets.homeboxUsername)) .Values.secrets.extraSecretRefs .Values.extraEnvFrom }}
+          {{- $hasEnvFrom := or .Values.secrets.existingSecret .Values.secrets.extraSecretRefs .Values.extraEnvFrom }}
           {{- if $hasEnvFrom }}
           envFrom:
-            {{- if or .Values.secrets.existingSecret (and (not .Values.secrets.homeboxApiKeySecret.name) (or .Values.secrets.homeboxApiKey .Values.secrets.aiApiKey .Values.secrets.homeboxUsername)) }}
+            {{- if .Values.secrets.existingSecret }}
             - secretRef:
-                name: {{ include "homebox-ai-inventory.secretName" . }}
+                name: {{ .Values.secrets.existingSecret }}
                 optional: true
             {{- end }}
             {{- range .Values.secrets.extraSecretRefs }}

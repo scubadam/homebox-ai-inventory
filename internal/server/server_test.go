@@ -264,3 +264,45 @@ func TestServerEndToEndAnalyzeAndCommitFlows(t *testing.T) {
 		t.Errorf("expected 1 uploaded attachment, got %d", len(uploadedAttachments))
 	}
 }
+
+func TestServerBasicAuth(t *testing.T) {
+	cfg := &config.Config{
+		AuthUsername: "admin",
+		AuthPassword: "secretpassword123",
+		AuthEnabled:  true,
+	}
+	srv := New(cfg, nil, &mockVisionProvider{})
+	ts := httptest.NewServer(srv.Handler())
+	defer ts.Close()
+
+	// 1. /api/health should always bypass auth
+	resHealth, err := http.Get(ts.URL + "/api/health")
+	if err != nil || resHealth.StatusCode != http.StatusOK {
+		t.Fatalf("expected /api/health to succeed without auth, got %v (err: %v)", resHealth.StatusCode, err)
+	}
+
+	// 2. Unauthenticated request to protected route should return 401
+	resIndex, err := http.Get(ts.URL + "/")
+	if err != nil || resIndex.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("expected / to return 401 without auth, got %v (err: %v)", resIndex.StatusCode, err)
+	}
+	if authHeader := resIndex.Header.Get("WWW-Authenticate"); !strings.Contains(authHeader, "Basic") {
+		t.Errorf("expected WWW-Authenticate header with Basic realm, got %q", authHeader)
+	}
+
+	// 3. Request with invalid credentials should return 401
+	reqBad, _ := http.NewRequest(http.MethodGet, ts.URL+"/", nil)
+	reqBad.SetBasicAuth("admin", "wrongpassword")
+	resBad, err := http.DefaultClient.Do(reqBad)
+	if err != nil || resBad.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("expected / to return 401 with bad auth, got %v", resBad.StatusCode)
+	}
+
+	// 4. Request with valid credentials should succeed (200)
+	reqGood, _ := http.NewRequest(http.MethodGet, ts.URL+"/", nil)
+	reqGood.SetBasicAuth("admin", "secretpassword123")
+	resGood, err := http.DefaultClient.Do(reqGood)
+	if err != nil || resGood.StatusCode != http.StatusOK {
+		t.Fatalf("expected / to return 200 with valid auth, got %v", resGood.StatusCode)
+	}
+}

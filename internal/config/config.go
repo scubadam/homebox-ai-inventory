@@ -23,6 +23,9 @@ type Config struct {
 	MaxImageDimension   int
 	JPEGQuality         int
 	AllowClientSettings bool
+	AuthUsername        string
+	AuthPassword        string
+	AuthEnabled         bool
 }
 
 // Load reads configuration from environment variables with sensible defaults
@@ -76,6 +79,10 @@ func Load() *Config {
 	jpegQual := getEnvInt("JPEG_QUALITY", 85)
 	allowClient := getEnvBool("ALLOW_CLIENT_SETTINGS", false)
 
+	authUsername := getEnv("AUTH_USERNAME", getEnv("APP_AUTH_USERNAME", ""))
+	authPassword := getEnv("AUTH_PASSWORD", getEnv("APP_AUTH_PASSWORD", ""))
+	authEnabled := authUsername != "" && authPassword != ""
+
 	return &Config{
 		Port:                port,
 		HomeboxURL:          hbURL,
@@ -91,6 +98,9 @@ func Load() *Config {
 		MaxImageDimension:   maxDim,
 		JPEGQuality:         jpegQual,
 		AllowClientSettings: allowClient,
+		AuthUsername:        authUsername,
+		AuthPassword:        authPassword,
+		AuthEnabled:         authEnabled,
 	}
 }
 

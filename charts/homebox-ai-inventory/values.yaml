@@ -28,7 +28,9 @@ ai:
   # Request timeout in seconds
   timeoutSeconds: 60
 
-# Secret Configuration (API Keys & Credentials)
+# Secret References (API Keys & Credentials)
+# In accordance with GitOps best practices, this chart never stores secret values in values.yaml.
+# Provide the names of existing Kubernetes Secrets managed via SOPS, SealedSecrets, Vault, ESO, etc.
 secrets:
   # Option 1: Existing single secret containing HOMEBOX_API_KEY (or HOMEBOX_USERNAME/PASSWORD) and AI_API_KEY
   existingSecret: ""
@@ -50,11 +52,26 @@ secrets:
     name: ""
     key: "AI_API_KEY"
 
-  # Option 4: Plain-text values to be created as a Kubernetes Secret by this chart (for dev/testing)
-  homeboxApiKey: ""
-  homeboxUsername: ""
-  homeboxPassword: ""
-  aiApiKey: ""
+# Web & API Authentication
+# Optional HTTP Basic Authentication to protect the PWA and API endpoints.
+# (/api/health is always unauthenticated so cluster probes and monitoring succeed).
+auth:
+  enabled: false
+
+  # Option A: Reference an existing Secret containing username and password
+  existingSecret: ""
+  # Key names inside the referenced secret
+  usernameKey: "username"
+  passwordKey: "password"
+
+  # Option B: External Secrets Operator (ESO) integration
+  # Automatically creates an ESO Password generator + ExternalSecret to generate a
+  # cryptographically secure password inside the cluster without storing it in Git or values.
+  externalSecret:
+    enabled: false
+    username: "admin"
+    passwordLength: 24
+    refreshInterval: "1h"
 
 # Additional environment variables to inject
 extraEnv: []

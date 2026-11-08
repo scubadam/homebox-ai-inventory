@@ -67,3 +67,21 @@ func TestLoadBackwardCompatibilityAndProviderDefaults(t *testing.T) {
 		t.Errorf("expected default ollama base URL, got %s", cfg.AIBaseURL)
 	}
 }
+
+func TestLoadAuthConfig(t *testing.T) {
+	// Neither set -> AuthEnabled is false
+	t.Setenv("AUTH_USERNAME", "")
+	t.Setenv("AUTH_PASSWORD", "")
+	cfgNone := Load()
+	if cfgNone.AuthEnabled {
+		t.Errorf("expected AuthEnabled=false when vars are unset")
+	}
+
+	// Both set -> AuthEnabled is true
+	t.Setenv("AUTH_USERNAME", "myuser")
+	t.Setenv("AUTH_PASSWORD", "mypassword")
+	cfgBoth := Load()
+	if !cfgBoth.AuthEnabled || cfgBoth.AuthUsername != "myuser" || cfgBoth.AuthPassword != "mypassword" {
+		t.Errorf("expected AuthEnabled=true with correct credentials, got %+v", cfgBoth)
+	}
+}

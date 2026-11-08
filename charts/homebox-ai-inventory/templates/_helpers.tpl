@@ -47,14 +47,3 @@ Selector labels
 app.kubernetes.io/name: {{ include "homebox-ai-inventory.name" . }}
 app.kubernetes.io/instance: {{ .Release.Name }}
 {{- end }}
-
-{{/*
-Determine the secret name to use
-*/}}
-{{- define "homebox-ai-inventory.secretName" -}}
-{{- if .Values.secrets.existingSecret }}
-{{- .Values.secrets.existingSecret }}
-{{- else }}
-{{- include "homebox-ai-inventory.fullname" . }}
-{{- end }}
-{{- end }}
