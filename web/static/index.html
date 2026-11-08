@@ -262,6 +262,16 @@
   </div>
 
   <script>
+    function escapeHtml(str) {
+      if (str === null || str === undefined) return '';
+      return String(str)
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#039;');
+    }
+
     let appState = {
       mode: 'new', // 'new', 'update', or 'add'
       locations: [],
@@ -345,7 +355,7 @@
         if (emptySub) emptySub.innerText = 'Photos will attach directly to added items';
         if (trayHeading) trayHeading.innerText = 'Item Photos:';
         if (traySub) traySub.innerText = 'Will attach directly to added items';
-        if (scanBtnText) scanBtnText.innerText = '✨ Scan Items with Gemini';
+        if (scanBtnText) scanBtnText.innerText = '✨ Scan Items with AI';
         document.getElementById('existingPhotosSection').classList.add('hidden');
         appState.existingAttachments = [];
         appState.primaryPhotoRef = null;
@@ -366,18 +376,18 @@
         // Parent locations for new container
         const locSelect = document.getElementById('parentLocation');
         locSelect.innerHTML = '<option value="">-- No Parent (Top Level) --</option>' +
-          appState.locations.map(l => `<option value="${l.id}">${l.displayName}</option>`).join('');
+          appState.locations.map(l => `<option value="${escapeHtml(l.id)}">${escapeHtml(l.displayName)}</option>`).join('');
 
         // Container types (Box, Location)
         const typeSelect = document.getElementById('containerType');
         typeSelect.innerHTML = appState.locationTypes.map(t =>
-          `<option value="${t.id}" ${t.name.toLowerCase() === 'box' ? 'selected' : ''}>${t.name}</option>`
+          `<option value="${escapeHtml(t.id)}" ${t.name.toLowerCase() === 'box' ? 'selected' : ''}>${escapeHtml(t.name)}</option>`
         ).join('');
 
         // Existing containers list for update mode
         const exSelect = document.getElementById('existingContainerSelect');
         exSelect.innerHTML = appState.locations.map(l =>
-          `<option value="${l.id}">${l.displayName}</option>`
+          `<option value="${escapeHtml(l.id)}">${escapeHtml(l.displayName)}</option>`
         ).join('');
       } catch (err) {
         alert('Failed to connect to Homebox API: ' + err.message);
@@ -898,7 +908,7 @@
         if (err.name === 'AbortError') {
           alert('Scan timed out. Please try again.');
         } else {
-          alert('Gemini scan failed: ' + err.message);
+          alert('AI scan failed: ' + err.message);
         }
       }
     }
@@ -915,7 +925,7 @@
       recCats.forEach(catName => {
         const btn = document.createElement('button');
         btn.className = 'text-xs bg-indigo-900/90 hover:bg-indigo-800 text-indigo-200 border border-indigo-700 px-3 py-1.5 rounded-lg flex items-center space-x-1.5 transition';
-        btn.innerHTML = `<span>+ Create <strong>"${catName}"</strong></span>`;
+        btn.innerHTML = `<span>+ Create <strong>"${escapeHtml(catName)}"</strong></span>`;
         btn.onclick = () => createQuickCategory(catName, btn);
         list.appendChild(btn);
       });
@@ -996,7 +1006,7 @@
       const rowId = 'item_' + Date.now() + '_' + Math.random().toString(36).substr(2, 4);
 
       const typeOptions = appState.itemTypes.map(t =>
-        `<option value="${t.id}" ${t.id === typeId ? 'selected' : ''}>${t.name}</option>`
+        `<option value="${escapeHtml(t.id)}" ${t.id === typeId ? 'selected' : ''}>${escapeHtml(t.name)}</option>`
       ).join('');
 
       let validPhotoIndices = Array.isArray(photoIndices) ? photoIndices.slice() : [];
@@ -1071,7 +1081,7 @@
         <div class="flex items-start justify-between space-x-2">
           <div class="flex items-center space-x-2 flex-1">
             ${statusBadge}
-            <input type="text" class="item-name flex-1 bg-transparent font-medium text-sm text-white placeholder-slate-500 border-b border-slate-800 focus:border-sky-500 focus:outline-none pb-1" value="${name}" placeholder="Item name">
+            <input type="text" class="item-name flex-1 bg-transparent font-medium text-sm text-white placeholder-slate-500 border-b border-slate-800 focus:border-sky-500 focus:outline-none pb-1" value="${escapeHtml(name)}" placeholder="Item name">
           </div>
           <button onclick="document.getElementById('${rowId}').remove(); updateItemCount();" class="text-slate-500 hover:text-rose-400 p-1">
             ✕
@@ -1087,7 +1097,7 @@
             ${typeOptions}
           </select>
         </div>
-        <input type="text" class="item-desc w-full bg-transparent text-xs text-slate-400 placeholder-slate-600 focus:outline-none" value="${desc}" placeholder="Optional notes/description">
+        <input type="text" class="item-desc w-full bg-transparent text-xs text-slate-400 placeholder-slate-600 focus:outline-none" value="${escapeHtml(desc)}" placeholder="Optional notes/description">
         ${actionControl}
         ${photoAttachmentControl}
       `;

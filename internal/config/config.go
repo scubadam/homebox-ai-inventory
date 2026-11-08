@@ -1,6 +1,7 @@
 package config
 
 import (
+	"log"
 	"os"
 	"strconv"
 	"strings"
@@ -80,8 +81,11 @@ func Load() *Config {
 	allowClient := getEnvBool("ALLOW_CLIENT_SETTINGS", false)
 
 	authUsername := getEnv("AUTH_USERNAME", getEnv("APP_AUTH_USERNAME", ""))
-	authPassword := getEnv("AUTH_PASSWORD", getEnv("APP_AUTH_PASSWORD", ""))
+	authPassword := getRawEnv("AUTH_PASSWORD", getRawEnv("APP_AUTH_PASSWORD", ""))
 	authEnabled := authUsername != "" && authPassword != ""
+	if (authUsername != "" && authPassword == "") || (authUsername == "" && authPassword != "") {
+		log.Printf("WARNING: Partial authentication credentials configured (AUTH_USERNAME and AUTH_PASSWORD must both be set). Basic Auth remains disabled.")
+	}
 
 	return &Config{
 		Port:                port,
@@ -107,6 +111,13 @@ func Load() *Config {
 func getEnv(key, fallback string) string {
 	if val, ok := os.LookupEnv(key); ok && strings.TrimSpace(val) != "" {
 		return strings.TrimSpace(val)
+	}
+	return fallback
+}
+
+func getRawEnv(key, fallback string) string {
+	if val, ok := os.LookupEnv(key); ok && val != "" {
+		return val
 	}
 	return fallback
 }

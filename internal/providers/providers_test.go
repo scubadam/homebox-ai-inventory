@@ -67,8 +67,8 @@ func TestGeminiProviderAnalyze(t *testing.T) {
 		if !strings.Contains(r.URL.Path, "gemini-2.5-flash:generateContent") {
 			t.Errorf("unexpected path: %s", r.URL.Path)
 		}
-		if r.URL.Query().Get("key") != "test-gemini-key" {
-			t.Errorf("missing or wrong API key")
+		if r.Header.Get("x-goog-api-key") != "test-gemini-key" && r.URL.Query().Get("key") != "test-gemini-key" {
+			t.Errorf("missing or wrong API key: header=%q, query=%q", r.Header.Get("x-goog-api-key"), r.URL.Query().Get("key"))
 		}
 		resp := map[string]any{
 			"candidates": []map[string]any{

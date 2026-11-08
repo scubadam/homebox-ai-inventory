@@ -86,12 +86,15 @@ func (g *GeminiProvider) Analyze(ctx context.Context, req AnalyzeRequest) (*RawV
 		return nil, err
 	}
 
-	url := fmt.Sprintf("%s/v1beta/models/%s:generateContent?key=%s", g.baseURL, g.model, g.apiKey)
+	url := fmt.Sprintf("%s/v1beta/models/%s:generateContent", g.baseURL, g.model)
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(bodyBytes))
 	if err != nil {
 		return nil, err
 	}
 	httpReq.Header.Set("Content-Type", "application/json")
+	if g.apiKey != "" {
+		httpReq.Header.Set("x-goog-api-key", g.apiKey)
+	}
 
 	resp, err := g.httpClient.Do(httpReq)
 	if err != nil {

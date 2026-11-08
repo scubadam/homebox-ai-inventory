@@ -3,6 +3,7 @@ package imaging
 import (
 	"bytes"
 	"encoding/binary"
+	"fmt"
 	"image"
 	"image/color"
 	"image/jpeg"
@@ -22,6 +23,14 @@ func OptimizeImage(input []byte, maxDim int, quality int) ([]byte, error) {
 	}
 	if quality <= 0 || quality > 100 {
 		quality = 85
+	}
+
+	// Inspect dimensions before full decode to protect against decompression bombs/OOM
+	cfg, _, err := image.DecodeConfig(bytes.NewReader(input))
+	if err == nil {
+		if cfg.Width > 10000 || cfg.Height > 10000 || int64(cfg.Width)*int64(cfg.Height) > 50_000_000 {
+			return input, fmt.Errorf("image dimensions (%dx%d) exceed safe limit", cfg.Width, cfg.Height)
+		}
 	}
 
 	img, _, err := image.Decode(bytes.NewReader(input))

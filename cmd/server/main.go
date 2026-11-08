@@ -1,8 +1,12 @@
 package main
 
 import (
+	"context"
 	"log"
 	"net/http"
+	"os"
+	"os/signal"
+	"syscall"
 	"time"
 
 	"github.com/scubadam/homebox-ai-inventory/internal/config"
@@ -38,9 +42,26 @@ func main() {
 		IdleTimeout:       120 * time.Second,
 	}
 
-	log.Printf("Starting homebox-ai-inventory on :%s (provider=%s, model=%s, homebox=%s)",
-		cfg.Port, provider.Name(), cfg.AIModel, cfg.HomeboxURL)
-	if err := httpServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-		log.Fatalf("Server failed: %v", err)
+	stopCtx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
+	go func() {
+		log.Printf("Starting homebox-ai-inventory on :%s (provider=%s, model=%s, homebox=%s)",
+			cfg.Port, provider.Name(), cfg.AIModel, cfg.HomeboxURL)
+		if err := httpServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			log.Fatalf("Server failed: %v", err)
+		}
+	}()
+
+	<-stopCtx.Done()
+	log.Printf("Shutting down gracefully (waiting up to 15s for in-flight requests)...")
+
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+
+	if err := httpServer.Shutdown(shutdownCtx); err != nil {
+		log.Printf("Graceful shutdown failed: %v", err)
+	} else {
+		log.Printf("Server stopped cleanly.")
 	}
 }

@@ -96,10 +96,15 @@ func (s *Server) basicAuthMiddleware(next http.Handler) http.Handler {
 
 func corsMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Access-Control-Allow-Origin", "*")
-		w.Header().Set("Access-Control-Allow-Credentials", "true")
+		origin := r.Header.Get("Origin")
+		if origin != "" {
+			w.Header().Set("Access-Control-Allow-Origin", origin)
+			w.Header().Set("Access-Control-Allow-Credentials", "true")
+		} else {
+			w.Header().Set("Access-Control-Allow-Origin", "*")
+		}
 		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
-		w.Header().Set("Access-Control-Allow-Headers", "*")
+		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization")
 		if r.Method == http.MethodOptions {
 			w.WriteHeader(http.StatusNoContent)
 			return
@@ -263,6 +268,8 @@ type ProcessedItem struct {
 }
 
 func (s *Server) handleAnalyze(w http.ResponseWriter, r *http.Request) {
+	// Limit request body to 64MB to prevent denial-of-service / memory exhaustion
+	r.Body = http.MaxBytesReader(w, r.Body, 64<<20)
 	if err := r.ParseMultipartForm(64 << 20); err != nil {
 		writeError(w, http.StatusBadRequest, "Invalid multipart form data: "+err.Error())
 		return
@@ -279,6 +286,10 @@ func (s *Server) handleAnalyze(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "No files provided")
 		return
 	}
+	if len(files) > 20 {
+		writeError(w, http.StatusBadRequest, "Too many files uploaded (maximum 20 photos per analysis)")
+		return
+	}
 
 	optImages := make([]providers.ImageInput, 0, len(files))
 	for _, fh := range files {
@@ -291,10 +302,19 @@ func (s *Server) handleAnalyze(w http.ResponseWriter, r *http.Request) {
 		if err != nil || len(rawBytes) == 0 {
 			continue
 		}
+
+		cType := fh.Header.Get("Content-Type")
+		if cType == "" {
+			cType = "image/jpeg"
+		}
+
 		optBytes, err := imaging.OptimizeImage(rawBytes, s.cfg.MaxImageDimension, s.cfg.JPEGQuality)
 		if err != nil {
 			log.Printf("image optimization fallback for %s: %v", fh.Filename, err)
+		} else {
+			cType = "image/jpeg"
 		}
+
 		fname := fh.Filename
 		if fname == "" {
 			fname = "photo.jpg"
@@ -302,7 +322,7 @@ func (s *Server) handleAnalyze(w http.ResponseWriter, r *http.Request) {
 		optImages = append(optImages, providers.ImageInput{
 			Filename:    fname,
 			Bytes:       optBytes,
-			ContentType: "image/jpeg",
+			ContentType: cType,
 		})
 	}
 
@@ -721,13 +741,34 @@ func (s *Server) handleCommit(w http.ResponseWriter, r *http.Request) {
 func (s *Server) saveSession(id string, images []providers.ImageInput) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	// Evict sessions older than 2 hours
-	cutoff := time.Now().Add(-2 * time.Hour)
+
+	// Evict sessions older than 30 minutes
+	cutoff := time.Now().Add(-30 * time.Minute)
 	for k, v := range s.sessions {
 		if v.CreatedAt.Before(cutoff) {
 			delete(s.sessions, k)
 		}
 	}
+
+	// Bound in-memory session growth: if 50 or more sessions exist, prune oldest
+	for len(s.sessions) >= 50 {
+		var oldestKey string
+		var oldestTime time.Time
+		first := true
+		for k, v := range s.sessions {
+			if first || v.CreatedAt.Before(oldestTime) {
+				oldestKey = k
+				oldestTime = v.CreatedAt
+				first = false
+			}
+		}
+		if oldestKey != "" {
+			delete(s.sessions, oldestKey)
+		} else {
+			break
+		}
+	}
+
 	s.sessions[id] = ImageSession{
 		CreatedAt: time.Now(),
 		Images:    images,
