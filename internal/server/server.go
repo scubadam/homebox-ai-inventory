@@ -199,10 +199,16 @@ func (s *Server) handleBootstrap(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadGateway, err.Error())
 		return
 	}
+	provName := ""
+	if s.provider != nil {
+		provName = s.provider.Name()
+	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"locations":      locations,
 		"location_types": typesData.Locations,
 		"item_types":     typesData.Items,
+		"ai_provider":    provName,
+		"ai_model":       s.cfg.AIModel,
 	})
 }
 
