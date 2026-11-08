@@ -1,0 +1,79 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "homebox-ai-inventory.fullname" . }}
+  labels:
+    {{- include "homebox-ai-inventory.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.replicaCount }}
+  selector:
+    matchLabels:
+      {{- include "homebox-ai-inventory.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      {{- with .Values.podAnnotations }}
+      annotations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      labels:
+        {{- include "homebox-ai-inventory.selectorLabels" . | nindent 8 }}
+    spec:
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      containers:
+        - name: {{ .Chart.Name }}
+          securityContext:
+            {{- toYaml .Values.securityContext | nindent 12 }}
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          ports:
+            - name: http
+              containerPort: {{ .Values.service.port }}
+              protocol: TCP
+          env:
+            - name: PORT
+              value: {{ .Values.service.port | quote }}
+            - name: HOMEBOX_URL
+              value: {{ .Values.homebox.url | quote }}
+            - name: HOMEBOX_PUBLIC_URL
+              value: {{ .Values.homebox.publicUrl | default .Values.homebox.url | quote }}
+            - name: AI_PROVIDER
+              value: {{ .Values.ai.provider | quote }}
+            - name: AI_MODEL
+              value: {{ .Values.ai.model | quote }}
+            {{- if .Values.ai.baseUrl }}
+            - name: AI_BASE_URL
+              value: {{ .Values.ai.baseUrl | quote }}
+            {{- end }}
+            - name: AI_TIMEOUT_SECONDS
+              value: {{ .Values.ai.timeoutSeconds | quote }}
+            - name: MAX_IMAGE_DIMENSION
+              value: {{ .Values.imaging.maxDimension | quote }}
+            - name: JPEG_QUALITY
+              value: {{ .Values.imaging.jpegQuality | quote }}
+          envFrom:
+            - secretRef:
+                name: {{ include "homebox-ai-inventory.secretName" . }}
+                optional: true
+          livenessProbe:
+            {{- toYaml .Values.livenessProbe | nindent 12 }}
+          readinessProbe:
+            {{- toYaml .Values.readinessProbe | nindent 12 }}
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}

@@ -1,0 +1,21 @@
+{
+  "name": "Homebox AI Inventory (Go Dev & Test)",
+  "dockerComposeFile": "docker-compose.dev.yml",
+  "service": "app",
+  "workspaceFolder": "/workspace",
+  "customizations": {
+    "vscode": {
+      "extensions": [
+        "golang.go",
+        "ms-azuretools.vscode-docker",
+        "redhat.vscode-yaml"
+      ],
+      "settings": {
+        "go.testFlags": ["-v", "-race"],
+        "go.lintTool": "golangci-lint"
+      }
+    }
+  },
+  "forwardPorts": [8000, 7745],
+  "postCreateCommand": "go mod download && go test -v ./..."
+}

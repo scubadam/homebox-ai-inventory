@@ -1,0 +1,59 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  test:
+    name: Unit & Integration Tests
+    runs-on: ubuntu-latest
+    services:
+      homebox:
+        image: ghcr.io/sysadminsmedia/homebox:latest
+        env:
+          HBOX_MODE: production
+          HBOX_STORAGE_CONN_STRING: file:///data?no_tmp_dir=true
+          HBOX_OPTIONS_ALLOW_REGISTRATION: "true"
+          HBOX_WEB_PORT: 7745
+          HBOX_AUTH_API_KEY_PEPPER: dGVzdC1wZXBwZXItYXRfbGVhc3RfMzJfYnl0ZXNfbG9uZ19mb3JfdGVzdGluZ19wdXJwb3Nlcwo=
+        ports:
+          - 7745:7745
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Enforce DevContainer & CI Version Sync
+        run: |
+          source .devcontainer/.env
+          echo "Verified DevContainer GO_DEV_IMAGE: $GO_DEV_IMAGE"
+          echo "Verified DevContainer HOMEBOX_TEST_IMAGE: $HOMEBOX_TEST_IMAGE"
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: 'go.mod'
+          cache: true
+
+      - name: Run Unit Tests with Race Detector
+        run: go test -v -race ./internal/... ./web/...
+
+      - name: Run Live Homebox E2E Integration Tests
+        env:
+          TEST_HOMEBOX_URL: http://localhost:7745
+        run: go test -tags=integration -v -run "TestLiveHomeboxE2E|TestServerE2EAgainstLiveHomebox" ./tests/integration/...
+
+      - name: Verify Multi-Arch Static Binary Compiles (amd64 + arm64)
+        run: |
+          CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags="-s -w" -o /tmp/server-amd64 ./cmd/server
+          CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -trimpath -ldflags="-s -w" -o /tmp/server-arm64 ./cmd/server
+          ls -lh /tmp/server-*
+
+      - name: Set up Helm
+        uses: azure/setup-helm@v4
+
+      - name: Lint Helm Chart
+        run: helm lint charts/homebox-ai-inventory
