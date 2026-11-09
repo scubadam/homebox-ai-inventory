@@ -96,6 +96,25 @@ See [`charts/homebox-ai-inventory/values.yaml`](charts/homebox-ai-inventory/valu
 
 ---
 
+## 💡 Design Philosophy & Comparison
+
+If you're exploring AI companions for Homebox, you may also be familiar with [Duelion/homebox-companion](https://github.com/Duelion/homebox-companion). Both projects bring AI vision to Homebox, but they are built for different workflows and infrastructure priorities:
+
+| Feature / Goal | **Homebox AI Inventory** (This Project) | **Homebox Companion** (Duelion) |
+| :--- | :--- | :--- |
+| **Primary Focus** | **Mobile-first camera intake tool:** Fast walk-around bin scanning, canvas cropping, and instant Homebox commit. | **Comprehensive inventory assistant:** Web dashboard with conversational AI chat, natural language queries, and item editing. |
+| **Tech Stack** | **Pure Go 1.26** static binary + embedded zero-dependency PWA. No Node, no Python runtime. | **Python (FastAPI)** + **Node (SvelteKit + Tailwind)** + LiteLLM. |
+| **Container & RAM** | **~15MB image** (`distroless/static:nonroot`), consumes **~1MB–15MB RAM**. Ideal for Raspberry Pi & low-power clusters. | **~500MB+ image**, consumes **~150MB–300MB+ RAM**. |
+| **State & Storage** | **100% Stateless:** Zero local databases or volumes required. Direct proxy to Homebox REST API. | **Stateful:** Requires persistent storage volume (`/app/data`) for local database and settings. |
+| **Image Processing** | **On-Device Canvas Cropping:** Browser canvas auto-rotates (EXIF), compresses, and extracts individual items with clean bounding-box cover crops. | Server-side / client-side photo attachments without automated on-device canvas item cropping. |
+| **Local Privacy** | **First-Class Ollama:** Native support for local vision models (`llama3.2-vision`, `llava-phi3`) with zero cloud dependencies. | Optimized primarily around OpenAI API models. |
+| **Deployment** | Docker Compose + **Official OCI Helm Chart** (supporting Ingress, Gateway API, ESO, cert-manager). | Docker Compose. |
+| **License** | **GNU AGPLv3** (strictly aligned with upstream Homebox). | GNU GPLv3. |
+
+*In short:* If you want an interactive AI chatbot to search and converse with your inventory via OpenAI, check out [Duelion/homebox-companion](https://github.com/Duelion/homebox-companion). If you want an ultra-lightweight, stateless mobile camera companion that runs locally on your homelab for ~1MB of RAM and crops items out of totes, `homebox-ai-inventory` is purpose-built for that.
+
+---
+
 ## 🛠️ Development & Testing
 
 ### Using DevContainer
