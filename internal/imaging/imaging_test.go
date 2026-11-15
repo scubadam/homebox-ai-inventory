@@ -99,3 +99,59 @@ func TestOptimizeImageInvalidBytesFallback(t *testing.T) {
 		t.Errorf("expected original bytes returned on fallback")
 	}
 }
+
+func TestCropNormalizedBox(t *testing.T) {
+	// 1000x1000 image with a distinct red region in [200, 300, 600, 700]
+	src := image.NewRGBA(image.Rect(0, 0, 1000, 1000))
+	for y := 0; y < 1000; y++ {
+		for x := 0; x < 1000; x++ {
+			if y >= 200 && y < 600 && x >= 300 && x < 700 {
+				src.Set(x, y, color.RGBA{R: 220, G: 30, B: 30, A: 255})
+			} else {
+				src.Set(x, y, color.RGBA{R: 240, G: 240, B: 240, A: 255})
+			}
+		}
+	}
+	var jpgBuf bytes.Buffer
+	if err := jpeg.Encode(&jpgBuf, src, &jpeg.Options{Quality: 95}); err != nil {
+		t.Fatalf("failed to encode jpeg: %v", err)
+	}
+
+	// Crop [200, 300, 600, 700] (400x400) with 0 padding and maxDim=800
+	cropped, err := CropNormalizedBox(jpgBuf.Bytes(), [4]int{200, 300, 600, 700}, 0, 800, 90)
+	if err != nil {
+		t.Fatalf("CropNormalizedBox failed: %v", err)
+	}
+	decoded, _, err := image.Decode(bytes.NewReader(cropped))
+	if err != nil {
+		t.Fatalf("failed to decode cropped jpeg: %v", err)
+	}
+	if decoded.Bounds().Dx() != 400 || decoded.Bounds().Dy() != 400 {
+		t.Errorf("expected 400x400 crop, got %dx%d", decoded.Bounds().Dx(), decoded.Bounds().Dy())
+	}
+	center := decoded.At(200, 200)
+	r, g, b, _ := center.RGBA()
+	if r>>8 < 180 || g>>8 > 80 || b>>8 > 80 {
+		t.Errorf("expected red center pixel, got RGB=(%d,%d,%d)", r>>8, g>>8, b>>8)
+	}
+
+	// Test downscaling + padding clamping near edge
+	scaled, err := CropNormalizedBox(jpgBuf.Bytes(), [4]int{0, 0, 900, 900}, 0.1, 300, 85)
+	if err != nil {
+		t.Fatalf("CropNormalizedBox with padding+scale failed: %v", err)
+	}
+	decodedScaled, _, err := image.Decode(bytes.NewReader(scaled))
+	if err != nil {
+		t.Fatalf("failed to decode scaled crop: %v", err)
+	}
+	if decodedScaled.Bounds().Dx() != 300 || decodedScaled.Bounds().Dy() != 300 {
+		t.Errorf("expected 300x300 scaled crop, got %dx%d", decodedScaled.Bounds().Dx(), decodedScaled.Bounds().Dy())
+	}
+
+	// Degenerate / inverted boxes must error
+	for _, bad := range [][4]int{{0, 0, 0, 0}, {500, 500, 400, 600}, {100, 100, 102, 500}} {
+		if _, err := CropNormalizedBox(jpgBuf.Bytes(), bad, 0.05, 800, 85); err == nil {
+			t.Errorf("expected error for invalid box %v", bad)
+		}
+	}
+}

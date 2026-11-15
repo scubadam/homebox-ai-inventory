@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"image"
 	"image/jpeg"
 	"mime/multipart"
@@ -18,12 +19,14 @@ import (
 )
 
 type mockVisionProvider struct {
-	result *providers.RawVisionResult
-	err    error
+	result  *providers.RawVisionResult
+	err     error
+	lastReq providers.AnalyzeRequest
 }
 
 func (m *mockVisionProvider) Name() string { return "mock-vision" }
-func (m *mockVisionProvider) Analyze(_ context.Context, _ providers.AnalyzeRequest) (*providers.RawVisionResult, error) {
+func (m *mockVisionProvider) Analyze(_ context.Context, req providers.AnalyzeRequest) (*providers.RawVisionResult, error) {
+	m.lastReq = req
 	return m.result, m.err
 }
 
@@ -304,5 +307,180 @@ func TestServerBasicAuth(t *testing.T) {
 	resGood, err := http.DefaultClient.Do(reqGood)
 	if err != nil || resGood.StatusCode != http.StatusOK {
 		t.Fatalf("expected / to return 200 with valid auth, got %v", resGood.StatusCode)
+	}
+}
+
+func TestServerItemCropsAndExteriorCoverFlow(t *testing.T) {
+	uploadedByEntity := map[string]int{}
+	createdIdx := 0
+
+	hbMux := http.NewServeMux()
+	hbMux.HandleFunc("/api/v1/entity-types", func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode([]homebox.EntityType{
+			{ID: "loc-box", Name: "Box", IsLocation: true},
+			{ID: "type-tools", Name: "Tools", IsLocation: false},
+		})
+	})
+	hbMux.HandleFunc("/api/v1/entities", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodPost {
+			createdIdx++
+			id := fmt.Sprintf("ent-%d", createdIdx)
+			w.WriteHeader(http.StatusCreated)
+			_ = json.NewEncoder(w).Encode(map[string]any{"id": id})
+		}
+	})
+	hbMux.HandleFunc("/api/v1/entities/", func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, "/attachments") && r.Method == http.MethodPost {
+			parts := strings.Split(strings.TrimPrefix(r.URL.Path, "/api/v1/entities/"), "/")
+			uploadedByEntity[parts[0]]++
+			w.WriteHeader(http.StatusCreated)
+			return
+		}
+		http.NotFound(w, r)
+	})
+
+	hbServer := httptest.NewServer(hbMux)
+	defer hbServer.Close()
+
+	cfg := &config.Config{
+		Port:              "8000",
+		HomeboxURL:        hbServer.URL,
+		HomeboxPublicURL:  "https://homebox.example.com",
+		HomeboxAPIKey:     "hb-key",
+		MaxImageDimension: 1600,
+		JPEGQuality:       85,
+	}
+	hbClient := homebox.NewClient(cfg.HomeboxURL, cfg.HomeboxPublicURL, cfg.HomeboxAPIKey, "", "")
+
+	coverIdx := 0
+	cropIdx := 1
+	mockAI := &mockVisionProvider{
+		result: &providers.RawVisionResult{
+			ContainerName:        "Garage Tool Drawer",
+			CoverPhotoIndex:      &coverIdx,
+			ExteriorPhotoIndices: []int{0},
+			Items: []providers.RawDetectedItem{
+				{
+					Name:                     "Screwdriver",
+					Quantity:                 1,
+					Description:              "Phillips #2",
+					Category:                 "Tools",
+					FallbackExistingCategory: "Tools",
+					Status:                   "new",
+					PhotoIndices:             []int{1},
+					CropPhotoIndex:           &cropIdx,
+					Box2D:                    []int{100, 100, 600, 600},
+				},
+				{
+					Name:                     "Loose Screws",
+					Quantity:                 15,
+					Description:              "Assorted",
+					Category:                 "Tools",
+					FallbackExistingCategory: "Tools",
+					Status:                   "new",
+					PhotoIndices:             []int{1},
+					Box2D:                    nil, // verify graceful fallback when no bounding box
+				},
+			},
+		},
+	}
+
+	appServer := New(cfg, hbClient, mockAI)
+	ts := httptest.NewServer(appServer.Handler())
+	defer ts.Close()
+
+	var bodyBuf bytes.Buffer
+	mw := multipart.NewWriter(&bodyBuf)
+	_ = mw.WriteField("mode", "new")
+	_ = mw.WriteField("isolate_items", "true")
+	f1, _ := mw.CreateFormFile("files", "exterior.jpg")
+	_, _ = f1.Write(makeTestJPEG())
+	f2, _ := mw.CreateFormFile("files", "interior.jpg")
+	_, _ = f2.Write(makeTestJPEG())
+	_ = mw.Close()
+
+	resAnalyze, err := http.Post(ts.URL+"/api/analyze", mw.FormDataContentType(), &bodyBuf)
+	if err != nil || resAnalyze.StatusCode != http.StatusOK {
+		t.Fatalf("analyze failed: err=%v status=%v", err, resAnalyze.StatusCode)
+	}
+	var analyzeData struct {
+		SessionID            string          `json:"session_id"`
+		CoverPhotoIndex      *int            `json:"cover_photo_index"`
+		ExteriorPhotoIndices []int           `json:"exterior_photo_indices"`
+		Items                []ProcessedItem `json:"items"`
+	}
+	if err := json.NewDecoder(resAnalyze.Body).Decode(&analyzeData); err != nil {
+		t.Fatalf("failed to decode analyze response: %v", err)
+	}
+	resAnalyze.Body.Close()
+
+	if !mockAI.lastReq.IsolateItemPhotos {
+		t.Errorf("expected AnalyzeRequest.IsolateItemPhotos=true")
+	}
+	if analyzeData.CoverPhotoIndex == nil || *analyzeData.CoverPhotoIndex != 0 {
+		t.Errorf("expected cover_photo_index=0, got %+v", analyzeData.CoverPhotoIndex)
+	}
+	if len(analyzeData.ExteriorPhotoIndices) != 1 || analyzeData.ExteriorPhotoIndices[0] != 0 {
+		t.Errorf("expected exterior_photo_indices=[0], got %v", analyzeData.ExteriorPhotoIndices)
+	}
+	if len(analyzeData.Items) != 2 || analyzeData.Items[0].CropID == "" || analyzeData.Items[0].CropURL == "" {
+		t.Fatalf("expected crop_id and crop_url on first item, got %+v", analyzeData.Items)
+	}
+	if analyzeData.Items[1].CropID != "" {
+		t.Errorf("expected empty crop_id on second item without box_2d, got %q", analyzeData.Items[1].CropID)
+	}
+
+	// Verify /api/session-crop serves the cropped JPEG preview
+	resCrop, err := http.Get(ts.URL + analyzeData.Items[0].CropURL)
+	if err != nil || resCrop.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200 from crop URL, got err=%v status=%v", err, resCrop.StatusCode)
+	}
+	if ct := resCrop.Header.Get("Content-Type"); ct != "image/jpeg" {
+		t.Errorf("expected image/jpeg from crop endpoint, got %q", ct)
+	}
+	resCrop.Body.Close()
+
+	// Commit with attach_crop=true on item 0
+	primaryRef := "new:0"
+	commitReq := CommitPayload{
+		SessionID:       analyzeData.SessionID,
+		Mode:            "new",
+		ContainerName:   "Garage Tool Drawer",
+		PrimaryPhotoRef: &primaryRef,
+		Items: []CommitItem{
+			{
+				Name:         "Screwdriver",
+				Quantity:     1,
+				EntityTypeID: "type-tools",
+				Status:       "new",
+				Action:       "save",
+				CropID:       analyzeData.Items[0].CropID,
+				AttachCrop:   true,
+			},
+			{
+				Name:         "Loose Screws",
+				Quantity:     15,
+				EntityTypeID: "type-tools",
+				Status:       "new",
+				Action:       "save",
+			},
+		},
+	}
+	commitBytes, _ := json.Marshal(commitReq)
+	resCommit, err := http.Post(ts.URL+"/api/commit", "application/json", bytes.NewReader(commitBytes))
+	if err != nil || resCommit.StatusCode != http.StatusOK {
+		t.Fatalf("commit failed: err=%v status=%v", err, resCommit.StatusCode)
+	}
+	resCommit.Body.Close()
+
+	// ent-1 is the container (2 uploaded photos), ent-2 is Screwdriver (1 cropped item photo), ent-3 is Loose Screws (0)
+	if uploadedByEntity["ent-1"] != 2 {
+		t.Errorf("expected 2 photos uploaded to container ent-1, got %d", uploadedByEntity["ent-1"])
+	}
+	if uploadedByEntity["ent-2"] != 1 {
+		t.Errorf("expected 1 cropped photo uploaded to item ent-2, got %d", uploadedByEntity["ent-2"])
+	}
+	if uploadedByEntity["ent-3"] != 0 {
+		t.Errorf("expected 0 photos uploaded to item ent-3, got %d", uploadedByEntity["ent-3"])
 	}
 }
