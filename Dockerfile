@@ -2,7 +2,7 @@
 # Compiles a single static Go binary and runs on a minimal distroless image (~15MB total).
 
 # Stage 1: Build static binary
-FROM --platform=$BUILDPLATFORM golang:1.26-bookworm AS builder
+FROM --platform=$BUILDPLATFORM golang:1.27-bookworm AS builder
 
 ARG TARGETOS
 ARG TARGETARCH
