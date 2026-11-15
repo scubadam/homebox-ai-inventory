@@ -77,7 +77,7 @@ func (g *GeminiProvider) Analyze(ctx context.Context, req AnalyzeRequest) (*RawV
 		},
 		"generationConfig": map[string]any{
 			"responseMimeType": "application/json",
-			"responseSchema":   geminiResponseSchema(),
+			"responseSchema":   geminiResponseSchema(req.IsolateItemPhotos),
 		},
 	}
 
@@ -130,13 +130,51 @@ func (g *GeminiProvider) Analyze(ctx context.Context, req AnalyzeRequest) (*RawV
 	return ParseCleanJSON(contentText)
 }
 
-func geminiResponseSchema() map[string]any {
+func geminiResponseSchema(isolateItems bool) map[string]any {
+	itemProps := map[string]any{
+		"name":                       map[string]any{"type": "STRING"},
+		"quantity":                   map[string]any{"type": "INTEGER"},
+		"description":                map[string]any{"type": "STRING"},
+		"category":                   map[string]any{"type": "STRING"},
+		"fallback_existing_category": map[string]any{"type": "STRING"},
+		"status":                     map[string]any{"type": "STRING", "enum": []string{"new", "matched"}},
+		"existing_id":                map[string]any{"type": "STRING", "nullable": true},
+		"photo_indices": map[string]any{
+			"type":        "ARRAY",
+			"items":       map[string]any{"type": "INTEGER"},
+			"description": "0-based indices of the photos where this item appears",
+		},
+	}
+	if isolateItems {
+		itemProps["crop_photo_index"] = map[string]any{
+			"type":        "INTEGER",
+			"nullable":    true,
+			"description": "0-based photo index from photo_indices showing the clearest view of this item",
+		}
+		itemProps["box_2d"] = map[string]any{
+			"type":        "ARRAY",
+			"nullable":    true,
+			"items":       map[string]any{"type": "INTEGER"},
+			"description": "Normalized [ymin, xmin, ymax, xmax] bounding box on a 0-1000 scale in crop_photo_index",
+		}
+	}
+
 	return map[string]any{
 		"type": "OBJECT",
 		"properties": map[string]any{
 			"container_name": map[string]any{
 				"type":        "STRING",
 				"description": "Suggested title for the container",
+			},
+			"cover_photo_index": map[string]any{
+				"type":        "INTEGER",
+				"nullable":    true,
+				"description": "0-based index of the best cover photo (preferring a closed exterior shot if provided)",
+			},
+			"exterior_photo_indices": map[string]any{
+				"type":        "ARRAY",
+				"items":       map[string]any{"type": "INTEGER"},
+				"description": "0-based indices of photos showing only the closed exterior of the container",
 			},
 			"recommended_new_categories": map[string]any{
 				"type":        "ARRAY",
@@ -146,22 +184,9 @@ func geminiResponseSchema() map[string]any {
 			"items": map[string]any{
 				"type": "ARRAY",
 				"items": map[string]any{
-					"type": "OBJECT",
-					"properties": map[string]any{
-						"name":                       map[string]any{"type": "STRING"},
-						"quantity":                   map[string]any{"type": "INTEGER"},
-						"description":                map[string]any{"type": "STRING"},
-						"category":                   map[string]any{"type": "STRING"},
-						"fallback_existing_category": map[string]any{"type": "STRING"},
-						"status":                     map[string]any{"type": "STRING", "enum": []string{"new", "matched"}},
-						"existing_id":                map[string]any{"type": "STRING", "nullable": true},
-						"photo_indices": map[string]any{
-							"type":        "ARRAY",
-							"items":       map[string]any{"type": "INTEGER"},
-							"description": "0-based indices of the photos where this item appears",
-						},
-					},
-					"required": []string{"name", "quantity", "description", "category", "fallback_existing_category"},
+					"type":       "OBJECT",
+					"properties": itemProps,
+					"required":   []string{"name", "quantity", "description", "category", "fallback_existing_category"},
 				},
 			},
 		},

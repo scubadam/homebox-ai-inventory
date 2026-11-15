@@ -25,28 +25,107 @@ func OptimizeImage(input []byte, maxDim int, quality int) ([]byte, error) {
 		quality = 85
 	}
 
+	img, err := decodeAndOrient(input)
+	if err != nil {
+		return input, err
+	}
+
+	out, err := encodeScaledJPEG(img, img.Bounds(), maxDim, quality)
+	if err != nil {
+		return input, err
+	}
+	return out, nil
+}
+
+// CropNormalizedBox extracts a normalized [ymin, xmin, ymax, xmax] (0..1000 scale) region
+// from input image bytes, expands it by padFraction, scales down to maxDim, and encodes as JPEG.
+func CropNormalizedBox(input []byte, box [4]int, padFraction float64, maxDim int, quality int) ([]byte, error) {
+	if maxDim <= 0 {
+		maxDim = 800
+	}
+	if quality <= 0 || quality > 100 {
+		quality = 85
+	}
+	if padFraction < 0 {
+		padFraction = 0
+	}
+
+	ymin, xmin, ymax, xmax := box[0], box[1], box[2], box[3]
+	if ymin < 0 {
+		ymin = 0
+	}
+	if xmin < 0 {
+		xmin = 0
+	}
+	if ymax > 1000 {
+		ymax = 1000
+	}
+	if xmax > 1000 {
+		xmax = 1000
+	}
+	if ymax-ymin < 5 || xmax-xmin < 5 {
+		return nil, fmt.Errorf("invalid or degenerate bounding box %v", box)
+	}
+
+	img, err := decodeAndOrient(input)
+	if err != nil {
+		return nil, err
+	}
+
+	b := img.Bounds()
+	w := b.Dx()
+	h := b.Dy()
+
+	x0 := float64(xmin) / 1000.0 * float64(w)
+	y0 := float64(ymin) / 1000.0 * float64(h)
+	x1 := float64(xmax) / 1000.0 * float64(w)
+	y1 := float64(ymax) / 1000.0 * float64(h)
+
+	if padFraction > 0 {
+		padX := (x1 - x0) * padFraction
+		padY := (y1 - y0) * padFraction
+		x0 -= padX
+		x1 += padX
+		y0 -= padY
+		y1 += padY
+	}
+
+	px0 := max(0, int(math.Floor(x0)))
+	py0 := max(0, int(math.Floor(y0)))
+	px1 := min(w, int(math.Ceil(x1)))
+	py1 := min(h, int(math.Ceil(y1)))
+	if px1-px0 < 1 || py1-py0 < 1 {
+		return nil, fmt.Errorf("cropped region is empty for box %v", box)
+	}
+
+	cropRect := image.Rect(b.Min.X+px0, b.Min.Y+py0, b.Min.X+px1, b.Min.Y+py1)
+	return encodeScaledJPEG(img, cropRect, maxDim, quality)
+}
+
+func decodeAndOrient(input []byte) (image.Image, error) {
 	// Inspect dimensions before full decode to protect against decompression bombs/OOM
 	cfg, _, err := image.DecodeConfig(bytes.NewReader(input))
 	if err == nil {
 		if cfg.Width > 10000 || cfg.Height > 10000 || int64(cfg.Width)*int64(cfg.Height) > 50_000_000 {
-			return input, fmt.Errorf("image dimensions (%dx%d) exceed safe limit", cfg.Width, cfg.Height)
+			return nil, fmt.Errorf("image dimensions (%dx%d) exceed safe limit", cfg.Width, cfg.Height)
 		}
 	}
 
 	img, _, err := image.Decode(bytes.NewReader(input))
 	if err != nil {
-		return input, err
+		return nil, err
 	}
 
 	// Apply EXIF orientation if present in JPEG header
-	orientation := readEXIFOrientation(input)
-	if orientation > 1 {
+	if orientation := readEXIFOrientation(input); orientation > 1 {
 		img = applyOrientation(img, orientation)
 	}
+	return img, nil
+}
 
-	bounds := img.Bounds()
-	w := bounds.Dx()
-	h := bounds.Dy()
+func encodeScaledJPEG(img image.Image, srcRect image.Rectangle, maxDim int, quality int) ([]byte, error) {
+	w := srcRect.Dx()
+	h := srcRect.Dy()
 
 	targetW, targetH := w, h
 	if w > maxDim || h > maxDim {
@@ -70,14 +149,14 @@ func OptimizeImage(input []byte, maxDim int, quality int) ([]byte, error) {
 	draw.Draw(dst, dst.Bounds(), &image.Uniform{C: color.White}, image.Point{}, draw.Src)
 
 	if targetW != w || targetH != h {
-		draw.CatmullRom.Scale(dst, dst.Bounds(), img, bounds, draw.Over, nil)
+		draw.CatmullRom.Scale(dst, dst.Bounds(), img, srcRect, draw.Over, nil)
 	} else {
-		draw.Draw(dst, dst.Bounds(), img, bounds.Min, draw.Over)
+		draw.Draw(dst, dst.Bounds(), img, srcRect.Min, draw.Over)
 	}
 
 	var out bytes.Buffer
 	if err := jpeg.Encode(&out, dst, &jpeg.Options{Quality: quality}); err != nil {
-		return input, err
+		return nil, err
 	}
 	return out.Bytes(), nil
 }

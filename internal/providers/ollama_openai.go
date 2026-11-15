@@ -60,11 +60,24 @@ func (p *OllamaOpenAIProvider) Name() string {
 	return p.providerType
 }
 
-const jsonFormattingSuffix = `
+func buildJSONFormattingSuffix(req AnalyzeRequest) string {
+	coverFields := ""
+	if req.Mode != "add" && len(req.Images) > 1 {
+		coverFields = `
+  "cover_photo_index": null,
+  "exterior_photo_indices": [],`
+	}
+	cropFields := ""
+	if req.IsolateItemPhotos {
+		cropFields = `,
+      "crop_photo_index": 0,
+      "box_2d": [100, 100, 500, 500]`
+	}
+	return fmt.Sprintf(`
 
 IMPORTANT: Respond ONLY with a valid JSON object matching this exact structure (no markdown fences, no commentary):
 {
-  "container_name": "Suggested Box Name",
+  "container_name": "Suggested Box Name",%s
   "recommended_new_categories": ["NewCat1"],
   "items": [
     {
@@ -75,10 +88,11 @@ IMPORTANT: Respond ONLY with a valid JSON object matching this exact structure (
       "fallback_existing_category": "ExistingCategoryName",
       "status": "new",
       "existing_id": null,
-      "photo_indices": [0]
+      "photo_indices": [0]%s
     }
   ]
-}`
+}`, coverFields, cropFields)
+}
 
 func (p *OllamaOpenAIProvider) Analyze(ctx context.Context, req AnalyzeRequest) (*RawVisionResult, error) {
 	if len(req.Images) == 0 {
@@ -91,7 +105,7 @@ func (p *OllamaOpenAIProvider) Analyze(ctx context.Context, req AnalyzeRequest) 
 }
 
 func (p *OllamaOpenAIProvider) analyzeOllama(ctx context.Context, req AnalyzeRequest) (*RawVisionResult, error) {
-	prompt := BuildPrompt(req) + jsonFormattingSuffix
+	prompt := BuildPrompt(req) + buildJSONFormattingSuffix(req)
 	imagesB64 := make([]string, 0, len(req.Images))
 	for _, img := range req.Images {
 		imagesB64 = append(imagesB64, base64.StdEncoding.EncodeToString(img.Bytes))
@@ -150,7 +164,7 @@ func (p *OllamaOpenAIProvider) analyzeOllama(ctx context.Context, req AnalyzeReq
 }
 
 func (p *OllamaOpenAIProvider) analyzeOpenAI(ctx context.Context, req AnalyzeRequest) (*RawVisionResult, error) {
-	prompt := BuildPrompt(req) + jsonFormattingSuffix
+	prompt := BuildPrompt(req) + buildJSONFormattingSuffix(req)
 	contentParts := make([]map[string]any, 0, len(req.Images)+1)
 	contentParts = append(contentParts, map[string]any{
 		"type": "text",

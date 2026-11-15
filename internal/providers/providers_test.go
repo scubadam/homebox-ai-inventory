@@ -36,6 +36,20 @@ func TestBuildPromptModesAndMultiAngle(t *testing.T) {
 	if !strings.Contains(prompt, "SAME container/box/shelf from DIFFERENT ANGLES") {
 		t.Errorf("expected multi-angle deduplication note in prompt")
 	}
+	if !strings.Contains(prompt, "EXTERIOR COVER DETECTION") {
+		t.Errorf("expected exterior cover detection instructions for multi-photo update/new mode")
+	}
+	if strings.Contains(prompt, "box_2d") {
+		t.Errorf("did not expect box_2d instructions when IsolateItemPhotos is false")
+	}
+
+	// IsolateItemPhotos enabled
+	reqCrop := req
+	reqCrop.IsolateItemPhotos = true
+	promptCrop := BuildPrompt(reqCrop)
+	if !strings.Contains(promptCrop, "box_2d") || !strings.Contains(promptCrop, "crop_photo_index") {
+		t.Errorf("expected box_2d and crop_photo_index instructions when IsolateItemPhotos is true")
+	}
 
 	// Add mode
 	reqAdd := AnalyzeRequest{
@@ -161,5 +175,115 @@ func TestAnthropicStubAndFactory(t *testing.T) {
 	_, err = p.Analyze(context.Background(), AnalyzeRequest{})
 	if err == nil || !strings.Contains(err.Error(), "stub") {
 		t.Errorf("expected anthropic stub error message, got: %v", err)
+	}
+}
+
+func TestGeminiProviderAnalyzeWithItemCrops(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatalf("failed to decode request body: %v", err)
+		}
+		genCfg, _ := body["generationConfig"].(map[string]any)
+		schema, _ := genCfg["responseSchema"].(map[string]any)
+		props, _ := schema["properties"].(map[string]any)
+		itemsSchema, _ := props["items"].(map[string]any)
+		itemObj, _ := itemsSchema["items"].(map[string]any)
+		itemProps, _ := itemObj["properties"].(map[string]any)
+		if _, ok := itemProps["box_2d"]; !ok {
+			t.Errorf("expected box_2d in Gemini item schema when IsolateItemPhotos is true")
+		}
+		if _, ok := itemProps["crop_photo_index"]; !ok {
+			t.Errorf("expected crop_photo_index in Gemini item schema when IsolateItemPhotos is true")
+		}
+
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"candidates": []map[string]any{
+				{
+					"content": map[string]any{
+						"parts": []map[string]any{
+							{
+								"text": `{"container_name":"Kitchen Drawer","recommended_new_categories":[],"items":[{"name":"Peeler","quantity":1,"description":"Green peeler","category":"Kitchenware","fallback_existing_category":"Misc","status":"new","photo_indices":[0],"crop_photo_index":0,"box_2d":[100,200,500,600]}]}`,
+							},
+						},
+					},
+				},
+			},
+		})
+	}))
+	defer srv.Close()
+
+	p := NewGeminiProvider(srv.URL, "gemini-2.5-flash", "test-gemini-key", 5*time.Second)
+	res, err := p.Analyze(context.Background(), AnalyzeRequest{
+		Mode:              "new",
+		IsolateItemPhotos: true,
+		Images:            []ImageInput{{Filename: "drawer.jpg", Bytes: []byte("drawer")}},
+	})
+	if err != nil {
+		t.Fatalf("GeminiProvider.Analyze failed: %v", err)
+	}
+	if len(res.Items) != 1 || len(res.Items[0].Box2D) != 4 || res.Items[0].CropPhotoIndex == nil || *res.Items[0].CropPhotoIndex != 0 {
+		t.Errorf("unexpected crop metadata on parsed item: %+v", res.Items)
+	}
+}
+
+func TestGeminiProviderAnalyzeWithExteriorCover(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatalf("failed to decode request body: %v", err)
+		}
+		genCfg, _ := body["generationConfig"].(map[string]any)
+		schema, _ := genCfg["responseSchema"].(map[string]any)
+		props, _ := schema["properties"].(map[string]any)
+		if _, ok := props["cover_photo_index"]; !ok {
+			t.Errorf("expected cover_photo_index in Gemini responseSchema")
+		}
+		if _, ok := props["exterior_photo_indices"]; !ok {
+			t.Errorf("expected exterior_photo_indices in Gemini responseSchema")
+		}
+		itemsSchema, _ := props["items"].(map[string]any)
+		itemObj, _ := itemsSchema["items"].(map[string]any)
+		itemProps, _ := itemObj["properties"].(map[string]any)
+		if _, ok := itemProps["box_2d"]; ok {
+			t.Errorf("did not expect box_2d in Gemini item schema when IsolateItemPhotos is false")
+		}
+
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"candidates": []map[string]any{
+				{
+					"content": map[string]any{
+						"parts": []map[string]any{
+							{
+								"text": `{"container_name":"Kitchen Drawer","cover_photo_index":0,"exterior_photo_indices":[0],"recommended_new_categories":[],"items":[{"name":"Peeler","quantity":1,"description":"Green peeler","category":"Kitchenware","fallback_existing_category":"Misc","status":"new","photo_indices":[1]}]}`,
+							},
+						},
+					},
+				},
+			},
+		})
+	}))
+	defer srv.Close()
+
+	p := NewGeminiProvider(srv.URL, "gemini-2.5-flash", "test-gemini-key", 5*time.Second)
+	res, err := p.Analyze(context.Background(), AnalyzeRequest{
+		Mode:              "new",
+		IsolateItemPhotos: false,
+		Images: []ImageInput{
+			{Filename: "exterior.jpg", Bytes: []byte("ext")},
+			{Filename: "interior.jpg", Bytes: []byte("int")},
+		},
+	})
+	if err != nil {
+		t.Fatalf("GeminiProvider.Analyze failed: %v", err)
+	}
+	if res.CoverPhotoIndex == nil || *res.CoverPhotoIndex != 0 {
+		t.Errorf("expected CoverPhotoIndex=0, got %+v", res.CoverPhotoIndex)
+	}
+	if len(res.ExteriorPhotoIndices) != 1 || res.ExteriorPhotoIndices[0] != 0 {
+		t.Errorf("expected ExteriorPhotoIndices=[0], got %v", res.ExteriorPhotoIndices)
+	}
+	if len(res.Items) != 1 || len(res.Items[0].Box2D) != 0 {
+		t.Errorf("expected no box_2d on parsed item, got %+v", res.Items)
 	}
 }

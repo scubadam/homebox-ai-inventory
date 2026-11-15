@@ -1,6 +1,7 @@
 package server
 
 import (
+	"context"
 	"crypto/rand"
 	"crypto/subtle"
 	"encoding/hex"
@@ -22,10 +23,11 @@ import (
 	"github.com/scubadam/homebox-ai-inventory/web"
 )
 
-// ImageSession holds optimized photos in memory between /api/analyze and /api/commit.
+// ImageSession holds optimized photos and extracted item crops in memory between /api/analyze and /api/commit.
 type ImageSession struct {
 	CreatedAt time.Time
 	Images    []providers.ImageInput
+	Crops     map[string][]byte
 }
 
 // Server implements all HTTP endpoints for homebox-ai-inventory.
@@ -64,6 +66,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/bootstrap", s.handleBootstrap)
 	mux.HandleFunc("POST /api/entity-types", s.handleCreateEntityType)
 	mux.HandleFunc("GET /api/attachment-proxy/{entity_id}/{attachment_id}", s.handleAttachmentProxy)
+	mux.HandleFunc("GET /api/session-crop/{session_id}/{crop_id}", s.handleSessionCrop)
 	mux.HandleFunc("GET /api/container-items/{container_id}", s.handleContainerItems)
 	mux.HandleFunc("POST /api/analyze", s.handleAnalyze)
 	mux.HandleFunc("POST /api/commit", s.handleCommit)
@@ -247,6 +250,29 @@ func (s *Server) handleAttachmentProxy(w http.ResponseWriter, r *http.Request) {
 	_, _ = w.Write(data)
 }
 
+func (s *Server) handleSessionCrop(w http.ResponseWriter, r *http.Request) {
+	sessionID := r.PathValue("session_id")
+	cropID := r.PathValue("crop_id")
+	if sessionID == "" || cropID == "" {
+		writeError(w, http.StatusBadRequest, "Missing session_id or crop_id")
+		return
+	}
+	sess, ok := s.getSession(sessionID)
+	if !ok {
+		writeError(w, http.StatusNotFound, "Session not found")
+		return
+	}
+	cropBytes, ok := sess.Crops[cropID]
+	if !ok || len(cropBytes) == 0 {
+		writeError(w, http.StatusNotFound, "Crop not found")
+		return
+	}
+	w.Header().Set("Content-Type", "image/jpeg")
+	w.Header().Set("Cache-Control", "private, max-age=300")
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write(cropBytes)
+}
+
 func (s *Server) handleContainerItems(w http.ResponseWriter, r *http.Request) {
 	containerID := r.PathValue("container_id")
 	if containerID == "" {
@@ -263,14 +289,16 @@ func (s *Server) handleContainerItems(w http.ResponseWriter, r *http.Request) {
 
 // ProcessedItem is the normalized item structure returned by /api/analyze to the PWA UI.
 type ProcessedItem struct {
-	Name          string  `json:"name"`
-	Quantity      int     `json:"quantity"`
-	Description   string  `json:"description"`
-	CategoryName  string  `json:"categoryName"`
-	EntityTypeID  string  `json:"entityTypeId"`
-	Status        string  `json:"status"`
-	ExistingID    *string `json:"existingId"`
-	PhotoIndices  []int   `json:"photo_indices,omitempty"`
+	Name         string  `json:"name"`
+	Quantity     int     `json:"quantity"`
+	Description  string  `json:"description"`
+	CategoryName string  `json:"categoryName"`
+	EntityTypeID string  `json:"entityTypeId"`
+	Status       string  `json:"status"`
+	ExistingID   *string `json:"existingId"`
+	PhotoIndices []int   `json:"photo_indices,omitempty"`
+	CropID       string  `json:"crop_id,omitempty"`
+	CropURL      string  `json:"crop_url,omitempty"`
 }
 
 func (s *Server) handleAnalyze(w http.ResponseWriter, r *http.Request) {
@@ -286,6 +314,7 @@ func (s *Server) handleAnalyze(w http.ResponseWriter, r *http.Request) {
 		mode = "new"
 	}
 	containerID := strings.TrimSpace(r.FormValue("container_id"))
+	isolateItems := r.FormValue("isolate_items") == "true" || r.FormValue("isolate_items") == "1"
 
 	files := r.MultipartForm.File["files"]
 	if len(files) == 0 {
@@ -338,7 +367,6 @@ func (s *Server) handleAnalyze(w http.ResponseWriter, r *http.Request) {
 	}
 
 	sessionID := generateSessionID()
-	s.saveSession(sessionID, optImages)
 
 	ctx := r.Context()
 	typesData, err := s.hb.FetchEntityTypes(ctx)
@@ -372,6 +400,7 @@ func (s *Server) handleAnalyze(w http.ResponseWriter, r *http.Request) {
 		Images:            optImages,
 		ExistingTypeNames: existingTypeNames,
 		ExistingItems:     existingItemsList,
+		IsolateItemPhotos: isolateItems,
 	})
 	if err != nil {
 		writeError(w, http.StatusBadGateway, err.Error())
@@ -392,6 +421,7 @@ func (s *Server) handleAnalyze(w http.ResponseWriter, r *http.Request) {
 
 	processedItems := make([]ProcessedItem, 0, len(parsed.Items))
 	matchedExistingIDs := make(map[string]bool)
+	crops := make(map[string][]byte)
 
 	for _, item := range parsed.Items {
 		catName := strings.TrimSpace(item.Category)
@@ -436,6 +466,23 @@ func (s *Server) handleAnalyze(w http.ResponseWriter, r *http.Request) {
 			status = "new"
 		}
 
+		cropID := ""
+		cropURL := ""
+		if isolateItems && len(item.Box2D) == 4 && len(crops) < 100 && len(optImages) > 0 {
+			cropSrcIdx := validPIndices[0]
+			if item.CropPhotoIndex != nil && *item.CropPhotoIndex >= 0 && *item.CropPhotoIndex < len(optImages) {
+				cropSrcIdx = *item.CropPhotoIndex
+			}
+			box := [4]int{item.Box2D[0], item.Box2D[1], item.Box2D[2], item.Box2D[3]}
+			if croppedBytes, cropErr := imaging.CropNormalizedBox(optImages[cropSrcIdx].Bytes, box, 0.06, 800, 85); cropErr == nil {
+				cropID = fmt.Sprintf("c%d", len(crops))
+				crops[cropID] = croppedBytes
+				cropURL = fmt.Sprintf("/api/session-crop/%s/%s", sessionID, cropID)
+			} else {
+				log.Printf("skipping crop for item '%s': %v", name, cropErr)
+			}
+		}
+
 		processedItems = append(processedItems, ProcessedItem{
 			Name:         name,
 			Quantity:     qty,
@@ -445,7 +492,33 @@ func (s *Server) handleAnalyze(w http.ResponseWriter, r *http.Request) {
 			Status:       status,
 			ExistingID:   exID,
 			PhotoIndices: validPIndices,
+			CropID:       cropID,
+			CropURL:      cropURL,
 		})
+	}
+
+	s.saveSession(sessionID, optImages, crops)
+
+	exteriorIndices := []int{}
+	seenExt := make(map[int]bool)
+	if mode != "add" && len(optImages) > 1 {
+		for _, idx := range parsed.ExteriorPhotoIndices {
+			if idx >= 0 && idx < len(optImages) && !seenExt[idx] {
+				exteriorIndices = append(exteriorIndices, idx)
+				seenExt[idx] = true
+			}
+		}
+	}
+
+	var coverPhotoIndex *int
+	if mode != "add" && len(optImages) > 1 {
+		if parsed.CoverPhotoIndex != nil && *parsed.CoverPhotoIndex >= 0 && *parsed.CoverPhotoIndex < len(optImages) {
+			idx := *parsed.CoverPhotoIndex
+			coverPhotoIndex = &idx
+		} else if len(exteriorIndices) > 0 {
+			idx := exteriorIndices[0]
+			coverPhotoIndex = &idx
+		}
 	}
 
 	missingItems := []ProcessedItem{}
@@ -474,6 +547,8 @@ func (s *Server) handleAnalyze(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{
 		"session_id":             sessionID,
 		"container_name":         containerName,
+		"cover_photo_index":      coverPhotoIndex,
+		"exterior_photo_indices": exteriorIndices,
 		"recommended_categories": recCats,
 		"items":                  processedItems,
 		"missing_items":          missingItems,
@@ -491,6 +566,8 @@ type CommitItem struct {
 	ExistingID   *string `json:"existingId"`
 	Action       string  `json:"action"` // "save", "delete", "ignore"
 	PhotoIndices []int   `json:"photo_indices"`
+	CropID       string  `json:"crop_id"`
+	AttachCrop   bool    `json:"attach_crop"`
 }
 
 // CommitPayload represents the JSON body sent by the PWA to /api/commit.
@@ -563,14 +640,20 @@ func (s *Server) handleCommit(w http.ResponseWriter, r *http.Request) {
 			}
 			createdCount++
 
+			cropUploaded := false
+			if s.uploadItemCrop(ctx, itemID, session, item) {
+				uploadedPhotosCount++
+				cropUploaded = true
+			}
+
 			targetIndices := item.PhotoIndices
-			if len(targetIndices) == 0 && len(session.Images) == 1 {
+			if len(targetIndices) == 0 && len(session.Images) == 1 && !cropUploaded {
 				targetIndices = []int{0}
 			}
 			for order, pIdx := range targetIndices {
 				if pIdx >= 0 && pIdx < len(session.Images) {
 					img := session.Images[pIdx]
-					isPrimary := (order == 0)
+					isPrimary := (!cropUploaded && order == 0)
 					if err := s.hb.UploadAttachment(ctx, itemID, img.Filename, img.ContentType, img.Bytes, isPrimary); err == nil {
 						uploadedPhotosCount++
 					} else {
@@ -710,6 +793,9 @@ func (s *Server) handleCommit(w http.ResponseWriter, r *http.Request) {
 				Description:  item.Description,
 			}); err == nil {
 				updatedCount++
+				if s.uploadItemCrop(ctx, exID, session, item) {
+					uploadedPhotosCount++
+				}
 			} else {
 				log.Printf("error updating item %s: %v", exID, err)
 			}
@@ -717,7 +803,7 @@ func (s *Server) handleCommit(w http.ResponseWriter, r *http.Request) {
 		}
 
 		parentID := containerID
-		if _, err := s.hb.CreateEntity(ctx, homebox.EntityInput{
+		if createdItemID, err := s.hb.CreateEntity(ctx, homebox.EntityInput{
 			Name:         strings.TrimSpace(item.Name),
 			ParentID:     &parentID,
 			EntityTypeID: item.EntityTypeID,
@@ -725,6 +811,9 @@ func (s *Server) handleCommit(w http.ResponseWriter, r *http.Request) {
 			Quantity:     qty,
 		}); err == nil {
 			createdCount++
+			if s.uploadItemCrop(ctx, createdItemID, session, item) {
+				uploadedPhotosCount++
+			}
 		} else {
 			log.Printf("error creating item '%s': %v", item.Name, err)
 		}
@@ -744,7 +833,23 @@ func (s *Server) handleCommit(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-func (s *Server) saveSession(id string, images []providers.ImageInput) {
+func (s *Server) uploadItemCrop(ctx context.Context, itemID string, session ImageSession, item CommitItem) bool {
+	if !item.AttachCrop || item.CropID == "" || itemID == "" {
+		return false
+	}
+	cropBytes, ok := session.Crops[item.CropID]
+	if !ok || len(cropBytes) == 0 {
+		return false
+	}
+	filename := fmt.Sprintf("item-%s.jpg", item.CropID)
+	if err := s.hb.UploadAttachment(ctx, itemID, filename, "image/jpeg", cropBytes, true); err != nil {
+		log.Printf("warning: failed to upload cropped photo %s to item %s: %v", item.CropID, itemID, err)
+		return false
+	}
+	return true
+}
+
+func (s *Server) saveSession(id string, images []providers.ImageInput, crops map[string][]byte) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -778,6 +883,7 @@ func (s *Server) saveSession(id string, images []providers.ImageInput) {
 	s.sessions[id] = ImageSession{
 		CreatedAt: time.Now(),
 		Images:    images,
+		Crops:     crops,
 	}
 }
 
