@@ -216,14 +216,11 @@ func TestServerE2EAgainstLiveHomebox(t *testing.T) {
 	t.Logf("Successfully verified full server E2E pipeline against live Homebox!")
 }
 
-func TestServerItemCropsAndExteriorCoverAgainstLiveHomebox(t *testing.T) {
-	coverIdx := 1
+func TestServerItemCropsAgainstLiveHomebox(t *testing.T) {
 	cropIdx := 0
 	mockProvider := &deterministicVisionProvider{
 		result: &providers.RawVisionResult{
-			ContainerName:        "Live Crop & Cover Bin",
-			CoverPhotoIndex:      &coverIdx,
-			ExteriorPhotoIndices: []int{1},
+			ContainerName: "Live Crop Bin",
 			Items: []providers.RawDetectedItem{
 				{
 					Name:           "Precision Screwdriver",
@@ -249,15 +246,13 @@ func TestServerItemCropsAndExteriorCoverAgainstLiveHomebox(t *testing.T) {
 
 	hbClient, ts, _ := setupLiveServerForTest(t, mockProvider)
 
-	// 1. Analyze two photos with isolate_items=true
+	// 1. Analyze photo with isolate_items=true
 	var formBuf bytes.Buffer
 	mw := multipart.NewWriter(&formBuf)
 	_ = mw.WriteField("mode", "new")
 	_ = mw.WriteField("isolate_items", "true")
-	fw0, _ := mw.CreateFormFile("files", "interior.jpg")
-	_, _ = fw0.Write(makeTestJPEG())
-	fw1, _ := mw.CreateFormFile("files", "exterior.jpg")
-	_, _ = fw1.Write(makeTestJPEG())
+	fw, _ := mw.CreateFormFile("files", "tools.jpg")
+	_, _ = fw.Write(makeTestJPEG())
 	_ = mw.Close()
 
 	resAnalyze, err := http.Post(ts.URL+"/api/analyze", mw.FormDataContentType(), &formBuf)
@@ -265,23 +260,15 @@ func TestServerItemCropsAndExteriorCoverAgainstLiveHomebox(t *testing.T) {
 		t.Fatalf("analyze failed: %v", err)
 	}
 	var analyzeResult struct {
-		SessionID            string                 `json:"session_id"`
-		ContainerName        string                 `json:"container_name"`
-		CoverPhotoIndex      *int                   `json:"cover_photo_index"`
-		ExteriorPhotoIndices []int                  `json:"exterior_photo_indices"`
-		Items                []server.ProcessedItem `json:"items"`
+		SessionID     string                 `json:"session_id"`
+		ContainerName string                 `json:"container_name"`
+		Items         []server.ProcessedItem `json:"items"`
 	}
 	_ = json.NewDecoder(resAnalyze.Body).Decode(&analyzeResult)
 	resAnalyze.Body.Close()
 
 	if mockProvider.lastReq == nil || !mockProvider.lastReq.IsolateItemPhotos {
 		t.Fatalf("expected IsolateItemPhotos=true forwarded to provider, got %+v", mockProvider.lastReq)
-	}
-	if analyzeResult.CoverPhotoIndex == nil || *analyzeResult.CoverPhotoIndex != 1 {
-		t.Fatalf("expected cover_photo_index=1, got %v", analyzeResult.CoverPhotoIndex)
-	}
-	if len(analyzeResult.ExteriorPhotoIndices) != 1 || analyzeResult.ExteriorPhotoIndices[0] != 1 {
-		t.Fatalf("expected exterior_photo_indices=[1], got %v", analyzeResult.ExteriorPhotoIndices)
 	}
 	if len(analyzeResult.Items) != 2 || analyzeResult.Items[0].CropURL == "" || analyzeResult.Items[1].CropURL == "" {
 		t.Fatalf("expected crop URLs on both analyzed items, got %+v", analyzeResult.Items)
@@ -298,8 +285,8 @@ func TestServerItemCropsAndExteriorCoverAgainstLiveHomebox(t *testing.T) {
 		t.Fatalf("unexpected crop preview response: content-type=%q bytes=%d", ct, len(cropBytes))
 	}
 
-	// 3. Commit with exterior photo 1 as primary cover, attaching only item 0's crop
-	primaryRef := fmt.Sprintf("new:%d", *analyzeResult.CoverPhotoIndex)
+	// 3. Commit attaching only item 0's crop
+	primaryRef := "new:0"
 	commitPayload := server.CommitPayload{
 		SessionID:       analyzeResult.SessionID,
 		Mode:            "new",
@@ -342,32 +329,19 @@ func TestServerItemCropsAndExteriorCoverAgainstLiveHomebox(t *testing.T) {
 	_ = json.NewDecoder(resCommit.Body).Decode(&commitResult)
 	resCommit.Body.Close()
 
-	if !commitResult.Success || commitResult.CreatedCount != 2 || commitResult.UploadedPhotosCount != 3 {
+	// 1 container photo + 1 attached item crop = 2 uploaded photos
+	if !commitResult.Success || commitResult.CreatedCount != 2 || commitResult.UploadedPhotosCount != 2 {
 		t.Fatalf("unexpected commit result: %+v", commitResult)
 	}
 	t.Cleanup(func() {
 		_ = hbClient.DeleteEntity(context.Background(), commitResult.ContainerID)
 	})
 
-	// 4. Verify container photos (primary cover = photo_1.jpg) and item crop attachments on real Homebox
+	// 4. Verify item attachments on live Homebox
 	details, err := hbClient.GetContainerDetails(context.Background(), commitResult.ContainerID)
 	if err != nil {
 		t.Fatalf("GetContainerDetails failed: %v", err)
 	}
-	if len(details.Items) != 2 || len(details.Attachments) != 2 {
-		t.Fatalf("expected 2 items and 2 container attachments, got items=%d attachments=%d", len(details.Items), len(details.Attachments))
-	}
-
-	var primaryTitle string
-	for _, att := range details.Attachments {
-		if att.Primary {
-			primaryTitle = att.Title
-		}
-	}
-	if primaryTitle != "exterior.jpg" {
-		t.Fatalf("expected primary container attachment to be exterior.jpg, got %q (attachments=%+v)", primaryTitle, details.Attachments)
-	}
-
 	itemByName := map[string]homebox.ContainerItem{}
 	for _, item := range details.Items {
 		itemByName[item.Name] = item
@@ -394,7 +368,6 @@ func TestServerItemCropsAndExteriorCoverAgainstLiveHomebox(t *testing.T) {
 		t.Fatalf("expected 0 attachments on Brass Feeler Gauge (attach_crop=false), got %+v", item1Atts)
 	}
 
-	// Verify item crop attachment streams cleanly via attachment proxy
 	thumbURL := fmt.Sprintf("%s/api/attachment-proxy/%s/%s", ts.URL, screwdriver.ID, item0Atts[0].ID)
 	resThumb, err := http.Get(thumbURL)
 	if err != nil || resThumb.StatusCode != http.StatusOK {
@@ -402,5 +375,123 @@ func TestServerItemCropsAndExteriorCoverAgainstLiveHomebox(t *testing.T) {
 	}
 	resThumb.Body.Close()
 
-	t.Logf("Successfully verified live Homebox exterior cover (%s) and item crop attachment on %s", primaryTitle, screwdriver.ID)
+	t.Logf("Successfully verified live Homebox item crop attachment on %s", screwdriver.ID)
+}
+
+func TestServerExteriorCoverAgainstLiveHomebox(t *testing.T) {
+	coverIdx := 1
+	mockProvider := &deterministicVisionProvider{
+		result: &providers.RawVisionResult{
+			ContainerName:        "Live Exterior Cover Bin",
+			CoverPhotoIndex:      &coverIdx,
+			ExteriorPhotoIndices: []int{1},
+			Items: []providers.RawDetectedItem{
+				{
+					Name:         "Socket Adapter",
+					Quantity:     1,
+					Description:  "Inside photo only",
+					Status:       "new",
+					PhotoIndices: []int{0},
+				},
+			},
+		},
+	}
+
+	hbClient, ts, _ := setupLiveServerForTest(t, mockProvider)
+
+	// 1. Analyze two photos (interior + exterior) with isolate_items disabled
+	var formBuf bytes.Buffer
+	mw := multipart.NewWriter(&formBuf)
+	_ = mw.WriteField("mode", "new")
+	fw0, _ := mw.CreateFormFile("files", "interior.jpg")
+	_, _ = fw0.Write(makeTestJPEG())
+	fw1, _ := mw.CreateFormFile("files", "exterior.jpg")
+	_, _ = fw1.Write(makeTestJPEG())
+	_ = mw.Close()
+
+	resAnalyze, err := http.Post(ts.URL+"/api/analyze", mw.FormDataContentType(), &formBuf)
+	if err != nil || resAnalyze.StatusCode != http.StatusOK {
+		t.Fatalf("analyze failed: %v", err)
+	}
+	var analyzeResult struct {
+		SessionID            string                 `json:"session_id"`
+		ContainerName        string                 `json:"container_name"`
+		CoverPhotoIndex      *int                   `json:"cover_photo_index"`
+		ExteriorPhotoIndices []int                  `json:"exterior_photo_indices"`
+		Items                []server.ProcessedItem `json:"items"`
+	}
+	_ = json.NewDecoder(resAnalyze.Body).Decode(&analyzeResult)
+	resAnalyze.Body.Close()
+
+	if mockProvider.lastReq == nil || mockProvider.lastReq.IsolateItemPhotos {
+		t.Fatalf("expected IsolateItemPhotos=false by default, got %+v", mockProvider.lastReq)
+	}
+	if analyzeResult.CoverPhotoIndex == nil || *analyzeResult.CoverPhotoIndex != 1 {
+		t.Fatalf("expected cover_photo_index=1, got %v", analyzeResult.CoverPhotoIndex)
+	}
+	if len(analyzeResult.ExteriorPhotoIndices) != 1 || analyzeResult.ExteriorPhotoIndices[0] != 1 {
+		t.Fatalf("expected exterior_photo_indices=[1], got %v", analyzeResult.ExteriorPhotoIndices)
+	}
+	if len(analyzeResult.Items) != 1 || analyzeResult.Items[0].CropID != "" {
+		t.Fatalf("expected 1 item without crop when isolate_items=false, got %+v", analyzeResult.Items)
+	}
+
+	// 2. Commit with detected exterior cover photo (new:1) as PrimaryPhotoRef
+	primaryRef := fmt.Sprintf("new:%d", *analyzeResult.CoverPhotoIndex)
+	commitPayload := server.CommitPayload{
+		SessionID:       analyzeResult.SessionID,
+		Mode:            "new",
+		ContainerName:   analyzeResult.ContainerName,
+		PrimaryPhotoRef: &primaryRef,
+		Items: []server.CommitItem{
+			{
+				Name:         analyzeResult.Items[0].Name,
+				Quantity:     analyzeResult.Items[0].Quantity,
+				Description:  analyzeResult.Items[0].Description,
+				Status:       "new",
+				Action:       "save",
+				PhotoIndices: []int{0},
+			},
+		},
+	}
+	commitBytes, _ := json.Marshal(commitPayload)
+	resCommit, err := http.Post(ts.URL+"/api/commit", "application/json", bytes.NewReader(commitBytes))
+	if err != nil || resCommit.StatusCode != http.StatusOK {
+		t.Fatalf("commit failed: %v", err)
+	}
+	var commitResult struct {
+		Success             bool   `json:"success"`
+		ContainerID         string `json:"container_id"`
+		CreatedCount        int    `json:"created_count"`
+		UploadedPhotosCount int    `json:"uploaded_photos_count"`
+	}
+	_ = json.NewDecoder(resCommit.Body).Decode(&commitResult)
+	resCommit.Body.Close()
+
+	if !commitResult.Success || commitResult.CreatedCount != 1 || commitResult.UploadedPhotosCount != 2 {
+		t.Fatalf("unexpected commit result: %+v", commitResult)
+	}
+	t.Cleanup(func() {
+		_ = hbClient.DeleteEntity(context.Background(), commitResult.ContainerID)
+	})
+
+	// 3. Verify container attachments on real Homebox mark exterior.jpg as primary
+	details, err := hbClient.GetContainerDetails(context.Background(), commitResult.ContainerID)
+	if err != nil {
+		t.Fatalf("GetContainerDetails failed: %v", err)
+	}
+	if len(details.Attachments) != 2 {
+		t.Fatalf("expected 2 container attachments, got %d", len(details.Attachments))
+	}
+	var primaryTitle string
+	for _, att := range details.Attachments {
+		if att.Primary {
+			primaryTitle = att.Title
+		}
+	}
+	if primaryTitle != "exterior.jpg" {
+		t.Fatalf("expected primary container attachment to be exterior.jpg, got %q (attachments=%+v)", primaryTitle, details.Attachments)
+	}
+
+	t.Logf("Successfully verified live Homebox exterior cover (%s) on %s", primaryTitle, commitResult.ContainerID)
 }

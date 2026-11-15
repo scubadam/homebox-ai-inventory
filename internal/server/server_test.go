@@ -310,8 +310,10 @@ func TestServerBasicAuth(t *testing.T) {
 	}
 }
 
-func TestServerItemCropsAndExteriorCoverFlow(t *testing.T) {
+func newMockHomeboxServerForUnitTests(t *testing.T) (*config.Config, *homebox.Client, map[string]int, map[string]bool) {
+	t.Helper()
 	uploadedByEntity := map[string]int{}
+	primaryUploaded := map[string]bool{}
 	createdIdx := 0
 
 	hbMux := http.NewServeMux()
@@ -333,6 +335,11 @@ func TestServerItemCropsAndExteriorCoverFlow(t *testing.T) {
 		if strings.HasSuffix(r.URL.Path, "/attachments") && r.Method == http.MethodPost {
 			parts := strings.Split(strings.TrimPrefix(r.URL.Path, "/api/v1/entities/"), "/")
 			uploadedByEntity[parts[0]]++
+			if err := r.ParseMultipartForm(10 << 20); err == nil {
+				if r.FormValue("primary") == "true" {
+					primaryUploaded[fmt.Sprintf("%s:%s", parts[0], r.FormValue("name"))] = true
+				}
+			}
 			w.WriteHeader(http.StatusCreated)
 			return
 		}
@@ -340,7 +347,7 @@ func TestServerItemCropsAndExteriorCoverFlow(t *testing.T) {
 	})
 
 	hbServer := httptest.NewServer(hbMux)
-	defer hbServer.Close()
+	t.Cleanup(hbServer.Close)
 
 	cfg := &config.Config{
 		Port:              "8000",
@@ -351,14 +358,16 @@ func TestServerItemCropsAndExteriorCoverFlow(t *testing.T) {
 		JPEGQuality:       85,
 	}
 	hbClient := homebox.NewClient(cfg.HomeboxURL, cfg.HomeboxPublicURL, cfg.HomeboxAPIKey, "", "")
+	return cfg, hbClient, uploadedByEntity, primaryUploaded
+}
 
-	coverIdx := 0
-	cropIdx := 1
+func TestServerItemCropsFlow(t *testing.T) {
+	cfg, hbClient, uploadedByEntity, _ := newMockHomeboxServerForUnitTests(t)
+
+	cropIdx := 0
 	mockAI := &mockVisionProvider{
 		result: &providers.RawVisionResult{
-			ContainerName:        "Garage Tool Drawer",
-			CoverPhotoIndex:      &coverIdx,
-			ExteriorPhotoIndices: []int{0},
+			ContainerName: "Garage Tool Drawer",
 			Items: []providers.RawDetectedItem{
 				{
 					Name:                     "Screwdriver",
@@ -367,7 +376,7 @@ func TestServerItemCropsAndExteriorCoverFlow(t *testing.T) {
 					Category:                 "Tools",
 					FallbackExistingCategory: "Tools",
 					Status:                   "new",
-					PhotoIndices:             []int{1},
+					PhotoIndices:             []int{0},
 					CropPhotoIndex:           &cropIdx,
 					Box2D:                    []int{100, 100, 600, 600},
 				},
@@ -378,7 +387,7 @@ func TestServerItemCropsAndExteriorCoverFlow(t *testing.T) {
 					Category:                 "Tools",
 					FallbackExistingCategory: "Tools",
 					Status:                   "new",
-					PhotoIndices:             []int{1},
+					PhotoIndices:             []int{0},
 					Box2D:                    nil, // verify graceful fallback when no bounding box
 				},
 			},
@@ -393,10 +402,8 @@ func TestServerItemCropsAndExteriorCoverFlow(t *testing.T) {
 	mw := multipart.NewWriter(&bodyBuf)
 	_ = mw.WriteField("mode", "new")
 	_ = mw.WriteField("isolate_items", "true")
-	f1, _ := mw.CreateFormFile("files", "exterior.jpg")
+	f1, _ := mw.CreateFormFile("files", "interior.jpg")
 	_, _ = f1.Write(makeTestJPEG())
-	f2, _ := mw.CreateFormFile("files", "interior.jpg")
-	_, _ = f2.Write(makeTestJPEG())
 	_ = mw.Close()
 
 	resAnalyze, err := http.Post(ts.URL+"/api/analyze", mw.FormDataContentType(), &bodyBuf)
@@ -404,10 +411,8 @@ func TestServerItemCropsAndExteriorCoverFlow(t *testing.T) {
 		t.Fatalf("analyze failed: err=%v status=%v", err, resAnalyze.StatusCode)
 	}
 	var analyzeData struct {
-		SessionID            string          `json:"session_id"`
-		CoverPhotoIndex      *int            `json:"cover_photo_index"`
-		ExteriorPhotoIndices []int           `json:"exterior_photo_indices"`
-		Items                []ProcessedItem `json:"items"`
+		SessionID string          `json:"session_id"`
+		Items     []ProcessedItem `json:"items"`
 	}
 	if err := json.NewDecoder(resAnalyze.Body).Decode(&analyzeData); err != nil {
 		t.Fatalf("failed to decode analyze response: %v", err)
@@ -416,12 +421,6 @@ func TestServerItemCropsAndExteriorCoverFlow(t *testing.T) {
 
 	if !mockAI.lastReq.IsolateItemPhotos {
 		t.Errorf("expected AnalyzeRequest.IsolateItemPhotos=true")
-	}
-	if analyzeData.CoverPhotoIndex == nil || *analyzeData.CoverPhotoIndex != 0 {
-		t.Errorf("expected cover_photo_index=0, got %+v", analyzeData.CoverPhotoIndex)
-	}
-	if len(analyzeData.ExteriorPhotoIndices) != 1 || analyzeData.ExteriorPhotoIndices[0] != 0 {
-		t.Errorf("expected exterior_photo_indices=[0], got %v", analyzeData.ExteriorPhotoIndices)
 	}
 	if len(analyzeData.Items) != 2 || analyzeData.Items[0].CropID == "" || analyzeData.Items[0].CropURL == "" {
 		t.Fatalf("expected crop_id and crop_url on first item, got %+v", analyzeData.Items)
@@ -473,14 +472,112 @@ func TestServerItemCropsAndExteriorCoverFlow(t *testing.T) {
 	}
 	resCommit.Body.Close()
 
-	// ent-1 is the container (2 uploaded photos), ent-2 is Screwdriver (1 cropped item photo), ent-3 is Loose Screws (0)
-	if uploadedByEntity["ent-1"] != 2 {
-		t.Errorf("expected 2 photos uploaded to container ent-1, got %d", uploadedByEntity["ent-1"])
+	// ent-1 is the container (1 uploaded photo), ent-2 is Screwdriver (1 cropped item photo), ent-3 is Loose Screws (0)
+	if uploadedByEntity["ent-1"] != 1 {
+		t.Errorf("expected 1 photo uploaded to container ent-1, got %d", uploadedByEntity["ent-1"])
 	}
 	if uploadedByEntity["ent-2"] != 1 {
 		t.Errorf("expected 1 cropped photo uploaded to item ent-2, got %d", uploadedByEntity["ent-2"])
 	}
 	if uploadedByEntity["ent-3"] != 0 {
 		t.Errorf("expected 0 photos uploaded to item ent-3, got %d", uploadedByEntity["ent-3"])
+	}
+}
+
+func TestServerExteriorCoverFlow(t *testing.T) {
+	cfg, hbClient, uploadedByEntity, primaryUploaded := newMockHomeboxServerForUnitTests(t)
+
+	coverIdx := 1
+	mockAI := &mockVisionProvider{
+		result: &providers.RawVisionResult{
+			ContainerName:        "Storage Tote #4",
+			CoverPhotoIndex:      &coverIdx,
+			ExteriorPhotoIndices: []int{1},
+			Items: []providers.RawDetectedItem{
+				{
+					Name:                     "Tape Measure",
+					Quantity:                 1,
+					Description:              "25ft tape",
+					Category:                 "Tools",
+					FallbackExistingCategory: "Tools",
+					Status:                   "new",
+					PhotoIndices:             []int{0},
+				},
+			},
+		},
+	}
+
+	appServer := New(cfg, hbClient, mockAI)
+	ts := httptest.NewServer(appServer.Handler())
+	defer ts.Close()
+
+	var bodyBuf bytes.Buffer
+	mw := multipart.NewWriter(&bodyBuf)
+	_ = mw.WriteField("mode", "new")
+	f1, _ := mw.CreateFormFile("files", "interior.jpg")
+	_, _ = f1.Write(makeTestJPEG())
+	f2, _ := mw.CreateFormFile("files", "exterior.jpg")
+	_, _ = f2.Write(makeTestJPEG())
+	_ = mw.Close()
+
+	resAnalyze, err := http.Post(ts.URL+"/api/analyze", mw.FormDataContentType(), &bodyBuf)
+	if err != nil || resAnalyze.StatusCode != http.StatusOK {
+		t.Fatalf("analyze failed: err=%v status=%v", err, resAnalyze.StatusCode)
+	}
+	var analyzeData struct {
+		SessionID            string          `json:"session_id"`
+		CoverPhotoIndex      *int            `json:"cover_photo_index"`
+		ExteriorPhotoIndices []int           `json:"exterior_photo_indices"`
+		Items                []ProcessedItem `json:"items"`
+	}
+	if err := json.NewDecoder(resAnalyze.Body).Decode(&analyzeData); err != nil {
+		t.Fatalf("failed to decode analyze response: %v", err)
+	}
+	resAnalyze.Body.Close()
+
+	if mockAI.lastReq.IsolateItemPhotos {
+		t.Errorf("expected AnalyzeRequest.IsolateItemPhotos=false by default")
+	}
+	if analyzeData.CoverPhotoIndex == nil || *analyzeData.CoverPhotoIndex != 1 {
+		t.Errorf("expected cover_photo_index=1, got %+v", analyzeData.CoverPhotoIndex)
+	}
+	if len(analyzeData.ExteriorPhotoIndices) != 1 || analyzeData.ExteriorPhotoIndices[0] != 1 {
+		t.Errorf("expected exterior_photo_indices=[1], got %v", analyzeData.ExteriorPhotoIndices)
+	}
+	if len(analyzeData.Items) != 1 || analyzeData.Items[0].CropID != "" {
+		t.Errorf("expected no item crops when isolate_items is false, got %+v", analyzeData.Items)
+	}
+
+	primaryRef := "new:1"
+	commitReq := CommitPayload{
+		SessionID:       analyzeData.SessionID,
+		Mode:            "new",
+		ContainerName:   "Storage Tote #4",
+		PrimaryPhotoRef: &primaryRef,
+		Items: []CommitItem{
+			{
+				Name:         "Tape Measure",
+				Quantity:     1,
+				EntityTypeID: "type-tools",
+				Status:       "new",
+				Action:       "save",
+			},
+		},
+	}
+	commitBytes, _ := json.Marshal(commitReq)
+	resCommit, err := http.Post(ts.URL+"/api/commit", "application/json", bytes.NewReader(commitBytes))
+	if err != nil || resCommit.StatusCode != http.StatusOK {
+		t.Fatalf("commit failed: err=%v status=%v", err, resCommit.StatusCode)
+	}
+	resCommit.Body.Close()
+
+	if uploadedByEntity["ent-1"] != 2 {
+		t.Errorf("expected 2 photos uploaded to container ent-1, got %d", uploadedByEntity["ent-1"])
+	}
+	if !primaryUploaded["ent-1:exterior.jpg"] || primaryUploaded["ent-1:interior.jpg"] {
+		t.Errorf("expected exterior.jpg marked primary and interior.jpg non-primary, got %+v", primaryUploaded)
+	}
+	if uploadedByEntity["ent-2"] != 0 {
+		t.Errorf("expected 0 attachments on item ent-2 without crop, got %d", uploadedByEntity["ent-2"])
 	}
 }
