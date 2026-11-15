@@ -22,6 +22,7 @@ type AnalyzeRequest struct {
 	Images            []ImageInput
 	ExistingTypeNames []string
 	ExistingItems     []homebox.ContainerItem
+	IsolateItemPhotos bool
 }
 
 // RawDetectedItem represents an item returned by the AI model's structured JSON output.
@@ -34,6 +35,8 @@ type RawDetectedItem struct {
 	Status                   string  `json:"status"`
 	ExistingID               *string `json:"existing_id"`
 	PhotoIndices             []int   `json:"photo_indices"`
+	Box2D                    []int   `json:"box_2d,omitempty"`
+	CropPhotoIndex           *int    `json:"crop_photo_index,omitempty"`
 }
 
 type rawDetectedItemAux struct {
@@ -45,6 +48,8 @@ type rawDetectedItemAux struct {
 	Status                   string          `json:"status"`
 	ExistingID               json.RawMessage `json:"existing_id"`
 	PhotoIndices             []int           `json:"photo_indices"`
+	Box2D                    []int           `json:"box_2d,omitempty"`
+	CropPhotoIndex           *int            `json:"crop_photo_index,omitempty"`
 }
 
 // UnmarshalJSON tolerates both string and numeric existing_id representations from local VLMs.
@@ -60,6 +65,8 @@ func (r *RawDetectedItem) UnmarshalJSON(data []byte) error {
 	r.FallbackExistingCategory = aux.FallbackExistingCategory
 	r.Status = aux.Status
 	r.PhotoIndices = aux.PhotoIndices
+	r.Box2D = aux.Box2D
+	r.CropPhotoIndex = aux.CropPhotoIndex
 
 	rawID := strings.TrimSpace(string(aux.ExistingID))
 	if rawID != "" && rawID != "null" {
@@ -77,6 +84,8 @@ func (r *RawDetectedItem) UnmarshalJSON(data []byte) error {
 // RawVisionResult matches the JSON schema returned by all vision providers.
 type RawVisionResult struct {
 	ContainerName            string            `json:"container_name"`
+	CoverPhotoIndex          *int              `json:"cover_photo_index,omitempty"`
+	ExteriorPhotoIndices     []int             `json:"exterior_photo_indices,omitempty"`
 	RecommendedNewCategories []string          `json:"recommended_new_categories"`
 	Items                    []RawDetectedItem `json:"items"`
 }
@@ -133,10 +142,20 @@ Deduplicate if the same physical item is visible across multiple angles, and rec
 `, len(req.Images))
 		} else {
 			multiPhotoNote = fmt.Sprintf(`
-NOTE: There are %d photos provided. These photos show the SAME container/box/shelf from DIFFERENT ANGLES and depths.
-Synthesize all photos together. CRITICAL: Deduplicate items across angles so each real physical object is counted only once!
+NOTE: There are %d photos provided. These photos show the SAME container/box/shelf from DIFFERENT ANGLES and depths, and may include a CLOSED EXTERIOR shot (such as a closed drawer front, cupboard door, or outside/label of a box) to serve as the container's front cover.
+Synthesize all interior photos together. CRITICAL: Deduplicate items across angles so each real physical object is counted only once!
+EXTERIOR COVER DETECTION:
+- If one or more photos show the CLOSED EXTERIOR of the container (closed drawer/cupboard/box front), record their 0-based index/indices in 'exterior_photo_indices', set 'cover_photo_index' to the best exterior shot (or the clearest full-container overview if all photos are interior), and read any visible exterior label/signage to help suggest 'container_name'.
+- Do NOT catalog objects sitting on top of, beside, or outside the closed container in 'exterior_photo_indices' as items inside the container.
 `, len(req.Images))
 		}
+	}
+
+	var cropInstructions string
+	if req.IsolateItemPhotos {
+		cropInstructions = `
+   - crop_photo_index (0-based integer photo index from photo_indices showing the clearest view of this item)
+   - box_2d (normalized [ymin, xmin, ymax, xmax] bounding box on a 0-1000 integer scale tightly enclosing this item in crop_photo_index; omit or set null if the item is too scattered or ambiguous to isolate cleanly)`
 	}
 
 	catsJoined := strings.Join(req.ExistingTypeNames, ", ")
@@ -151,7 +170,7 @@ Current available item categories in Homebox: [%s].
 %s
 
 INSTRUCTIONS:
-1. Identify all distinct items or groups of items visible across the photos.
+1. Identify all distinct items or groups of items visible across the interior photos.
 2. Provide accurate counts/quantities.
 3. For each item, decide its best category/type:
    - If an existing category fits (e.g. Cables, Screws/hardware, Pc parts, etc.), use it.
@@ -165,8 +184,8 @@ INSTRUCTIONS:
    - fallback_existing_category (must be one from: [%s])
    - status ("new" or "matched")
    - existing_id (if matched to an existing item, otherwise null)
-   - photo_indices (array of 0-based integers matching the photos where this item appears, e.g. [0] or [1])
-`, multiPhotoNote, catsJoined, existingContext, catsJoined)
+   - photo_indices (array of 0-based integers matching the photos where this item appears, e.g. [0] or [1])%s
+`, multiPhotoNote, catsJoined, existingContext, catsJoined, cropInstructions)
 }
 
 // ParseCleanJSON strips optional markdown code fences (```json ... ```) before unmarshaling

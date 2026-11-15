@@ -175,6 +175,14 @@
           <!-- Thumbnails injected here -->
         </div>
 
+        <label for="isolateItemsCheckbox" class="flex items-start space-x-2.5 bg-slate-950/70 border border-slate-800 hover:border-slate-700 rounded-xl p-2.5 cursor-pointer select-none transition">
+          <input type="checkbox" id="isolateItemsCheckbox" class="mt-0.5 h-4 w-4 rounded border-slate-600 bg-slate-800 text-sky-500 focus:ring-sky-500 focus:ring-offset-slate-900">
+          <div class="flex-1 leading-tight">
+            <div class="text-xs font-medium text-slate-200">✂️ Extract isolated item photos</div>
+            <div class="text-[10px] text-slate-400 mt-0.5">Crop each item from your photos as its own thumbnail (verify before saving)</div>
+          </div>
+        </label>
+
         <button id="btnScan" onclick="triggerScan()" class="w-full bg-gradient-to-r from-sky-600 to-indigo-600 hover:from-sky-500 hover:to-indigo-500 active:scale-[0.98] transition text-white font-semibold py-3 px-4 rounded-xl shadow-lg shadow-sky-600/20 flex items-center justify-center space-x-2">
           <span id="btnScanText">✨ Scan with AI</span>
         </button>
@@ -283,7 +291,9 @@
       photos: [], // array of { file, dataUrl }
       existingItemsInContainer: [],
       existingAttachments: [], // array of { id, title, primary, createdAt, url, fullUrl, action: 'keep'|'delete' }
-      primaryPhotoRef: null // 'new:0', 'new:1', or 'existing:<id>'
+      primaryPhotoRef: null, // 'new:0', 'new:1', or 'existing:<id>'
+      userPickedCover: false,
+      exteriorPhotoIndices: []
     };
 
     function getProviderDisplayName() {
@@ -318,6 +328,8 @@
 
     function setMode(mode) {
       appState.mode = mode;
+      appState.userPickedCover = false;
+      appState.exteriorPhotoIndices = [];
       document.getElementById('modeNewBtn').className = mode === 'new'
         ? 'py-2 rounded-lg bg-sky-600 text-white shadow transition'
         : 'py-2 rounded-lg text-slate-400 hover:text-white transition';
@@ -434,6 +446,8 @@
     async function handleExistingContainerChanged() {
       const containerId = document.getElementById('existingContainerSelect').value;
       const preview = document.getElementById('existingItemsPreview');
+      appState.userPickedCover = false;
+      appState.exteriorPhotoIndices = [];
       if (!containerId) {
         preview.classList.add('hidden');
         appState.existingAttachments = [];
@@ -494,6 +508,7 @@
 
     function setPrimaryPhoto(ref) {
       appState.primaryPhotoRef = ref;
+      appState.userPickedCover = true;
       renderExistingPhotosTray();
       renderPhotosTray();
       renderReviewPhotosSummary();
@@ -701,6 +716,9 @@
 
     function removePhoto(index) {
       appState.photos.splice(index, 1);
+      appState.exteriorPhotoIndices = appState.exteriorPhotoIndices
+        .filter(i => i !== index)
+        .map(i => (i > index ? i - 1 : i));
       if (appState.mode !== 'add') {
         if (appState.primaryPhotoRef === 'new:' + index) {
           if (appState.photos.length > 0) {
@@ -866,6 +884,7 @@
       // Render new photos
       appState.photos.forEach((p, idx) => {
         const isPrimary = (appState.primaryPhotoRef === 'new:' + idx);
+        const isExterior = appState.exteriorPhotoIndices.includes(idx);
         const card = document.createElement('div');
         card.className = `relative flex-shrink-0 w-20 rounded-lg overflow-hidden border ${isPrimary ? 'border-amber-400 ring-2 ring-amber-400/40' : 'border-slate-700 bg-slate-900'} flex flex-col`;
 
@@ -877,9 +896,10 @@
             ` : `
               <button type="button" onclick="setPrimaryPhoto('new:${idx}')" class="absolute top-0.5 left-0.5 bg-black/70 text-amber-300 text-[8px] px-1 py-0.2 rounded">☆ Cover</button>
             `}
+            ${isExterior ? `<div class="absolute bottom-0.5 right-0.5 bg-indigo-950/90 text-indigo-300 border border-indigo-700 text-[7px] font-bold px-1 rounded">Exterior</div>` : ''}
           </div>
-          <div class="p-0.5 bg-slate-900 text-center text-[8px] text-sky-300">
-            Angle ${idx + 1}
+          <div class="p-0.5 bg-slate-900 text-center text-[8px] ${isExterior ? 'text-indigo-300 font-semibold' : 'text-sky-300'}">
+            ${isExterior ? 'Exterior' : `Angle ${idx + 1}`}
           </div>
         `;
         list.appendChild(card);
@@ -899,6 +919,8 @@
         formData.append('files', p.file);
       });
       formData.append('mode', appState.mode);
+      const isolateEl = document.getElementById('isolateItemsCheckbox');
+      formData.append('isolate_items', isolateEl && isolateEl.checked ? 'true' : 'false');
       if (appState.mode === 'update' || appState.mode === 'add') {
         formData.append('container_id', document.getElementById('existingContainerSelect').value);
       }
@@ -924,6 +946,18 @@
         }
         const data = await res.json();
         appState.currentSessionId = data.session_id;
+        appState.exteriorPhotoIndices = Array.isArray(data.exterior_photo_indices) ? data.exterior_photo_indices : [];
+
+        // Auto-select detected exterior/cover photo unless user explicitly picked one (or update mode already has an existing cover)
+        if (appState.mode !== 'add' && !appState.userPickedCover &&
+            data.cover_photo_index !== null && data.cover_photo_index !== undefined &&
+            data.cover_photo_index >= 0 && data.cover_photo_index < appState.photos.length) {
+          const hasExistingCover = (appState.mode === 'update' && appState.primaryPhotoRef && appState.primaryPhotoRef.startsWith('existing:'));
+          if (!hasExistingCover) {
+            appState.primaryPhotoRef = 'new:' + data.cover_photo_index;
+            renderPhotosTray();
+          }
+        }
 
         // Auto-fill container name if in new mode and empty
         if (appState.mode === 'new') {
@@ -1021,7 +1055,9 @@
           item.status,
           item.existingId,
           item.categoryName,
-          item.photo_indices || []
+          item.photo_indices || [],
+          item.crop_id || '',
+          item.crop_url || ''
         );
       });
 
@@ -1040,7 +1076,7 @@
       updateItemCount();
     }
 
-    function addItemRow(name = '', qty = 1, typeId = '', desc = '', status = 'new', existingId = null, categoryName = '', photoIndices = []) {
+    function addItemRow(name = '', qty = 1, typeId = '', desc = '', status = 'new', existingId = null, categoryName = '', photoIndices = [], cropId = '', cropUrl = '') {
       const container = document.getElementById('itemsList');
       const rowId = 'item_' + Date.now() + '_' + Math.random().toString(36).substr(2, 4);
 
@@ -1049,7 +1085,7 @@
       ).join('');
 
       let validPhotoIndices = Array.isArray(photoIndices) ? photoIndices.slice() : [];
-      if (appState.mode === 'add' && validPhotoIndices.length === 0 && appState.photos.length > 0) {
+      if (appState.mode === 'add' && validPhotoIndices.length === 0 && appState.photos.length > 0 && !cropUrl) {
         validPhotoIndices = [0];
       }
 
@@ -1073,6 +1109,7 @@
       div.dataset.categoryName = categoryName;
       div.dataset.action = status === 'missing' ? 'ignore' : 'save'; // default ignore for missing unless toggled
       div.dataset.photoIndices = JSON.stringify(validPhotoIndices);
+      div.dataset.cropId = cropId || '';
       div.className = `${cardBg} border rounded-xl p-3 space-y-2`;
 
       let actionControl = '';
@@ -1116,6 +1153,20 @@
         `;
       }
 
+      let cropControl = '';
+      if (cropUrl && status !== 'missing') {
+        cropControl = `
+          <label class="flex items-center space-x-2.5 pt-1.5 border-t border-slate-800/80 cursor-pointer select-none">
+            <input type="checkbox" class="item-attach-crop h-3.5 w-3.5 rounded border-slate-600 bg-slate-800 text-sky-500 focus:ring-sky-500" checked>
+            <img src="${escapeHtml(cropUrl)}" class="w-9 h-9 rounded-lg object-cover border border-slate-700 bg-slate-900 flex-shrink-0">
+            <div class="leading-tight">
+              <div class="text-[11px] font-medium text-slate-200">Attach isolated item photo</div>
+              <div class="text-[10px] text-slate-400">Uncheck if crop looks inaccurate</div>
+            </div>
+          </label>
+        `;
+      }
+
       div.innerHTML = `
         <div class="flex items-start justify-between space-x-2">
           <div class="flex items-center space-x-2 flex-1">
@@ -1138,6 +1189,7 @@
         </div>
         <input type="text" class="item-desc w-full bg-transparent text-xs text-slate-400 placeholder-slate-600 focus:outline-none" value="${escapeHtml(desc)}" placeholder="Optional notes/description">
         ${actionControl}
+        ${cropControl}
         ${photoAttachmentControl}
       `;
       container.appendChild(div);
@@ -1280,6 +1332,10 @@
           photoIndices = [];
         }
 
+        const cropId = row.dataset.cropId || '';
+        const attachCropEl = row.querySelector('.item-attach-crop');
+        const attachCrop = attachCropEl ? attachCropEl.checked : false;
+
         if (name || action === 'delete') {
           items.push({
             name: name,
@@ -1289,7 +1345,9 @@
             status: status,
             existingId: existingId,
             action: action,
-            photo_indices: photoIndices
+            photo_indices: photoIndices,
+            crop_id: cropId,
+            attach_crop: attachCrop
           });
         }
       });
@@ -1370,7 +1428,11 @@
       appState.photos = [];
       appState.existingAttachments = [];
       appState.primaryPhotoRef = null;
+      appState.userPickedCover = false;
+      appState.exteriorPhotoIndices = [];
       appState.currentSessionId = null;
+      const isolateEl = document.getElementById('isolateItemsCheckbox');
+      if (isolateEl) isolateEl.checked = false;
       setMode(appState.mode);
     }
 
