@@ -6,6 +6,25 @@ Built in **Go**, compiled to a single static binary running on **distroless** (~
 
 ---
 
+## 📸 See It in Action
+
+Turn a photo of any drawer, tote, or shelf into a fully cataloged Homebox container in seconds:
+
+<p align="center">
+  <table>
+    <tr>
+      <td align="center"><img src="docs/images/03-photo-ready.jpg" width="195" alt="1. Snap or upload photos and tap Scan with Gemini"><br><sub><b>1. Snap &amp; Scan</b><br>Attach angles &amp; pick cover</sub></td>
+      <td align="center"><img src="docs/images/05-review-items.jpg" width="195" alt="2. Review AI-detected items, quantities, and categories"><br><sub><b>2. AI Review &amp; Edit</b><br>Verify counts &amp; categories</sub></td>
+      <td align="center"><img src="docs/images/08-saved-confirmation.png" width="195" alt="3. Sync summary confirmation with Open in Homebox"><br><sub><b>3. One-Tap Sync</b><br>Creates container &amp; items</sub></td>
+      <td align="center"><img src="docs/images/10-homebox-photo-and-items.jpg" width="195" alt="4. Result inside Homebox with photo and indexed items"><br><sub><b>4. Ready in Homebox</b><br>Photo &amp; items searchable</sub></td>
+    </tr>
+  </table>
+</p>
+
+👉 **[See the full step-by-step visual walkthrough](docs/walkthrough.md)**
+
+---
+
 ## 🌟 Key Features
 
 * **📱 Mobile-First PWA Experience**: Installable directly to your phone's home screen with native rear camera acquisition and drag-and-drop gallery uploads.
