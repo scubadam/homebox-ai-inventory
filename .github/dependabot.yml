@@ -20,6 +20,10 @@ updates:
       default-days: 7
     commit-message:
       prefix: "ci(deps)"
+    groups:
+      github-actions:
+        patterns:
+          - "*"
 
   # Maintain Docker base image dependencies
   - package-ecosystem: "docker"
